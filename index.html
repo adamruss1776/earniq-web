@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>EarnIQ</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>if(window['pdfjs-dist/build/pdf'])window['pdfjs-dist/build/pdf'].GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #080808;
+      --surface: #111111;
+      --surface2: #181818;
+      --surface3: #222222;
+      --border: rgba(255,255,255,0.07);
+      --border2: rgba(255,255,255,0.13);
+      --text: #f0f0f0;
+      --muted: #888;
+      --dim: #555;
+      --green: #22c55e;
+      --green-bg: rgba(34,197,94,0.1);
+      --green-border: rgba(34,197,94,0.28);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245,158,11,0.1);
+      --amber-border: rgba(245,158,11,0.28);
+      --red: #ef4444;
+      --red-bg: rgba(239,68,68,0.1);
+      --blue: #60a5fa;
+      --blue-bg: rgba(96,165,250,0.1);
+      --blue-border: rgba(96,165,250,0.28);
+      --nav-h: 72px;
+      --r: 12px;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-weight: 400;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #root {
+      max-width: 430px;
+      margin: 0 auto;
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+    }
+    input, select, textarea, button {
+      font-family: inherit;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input[type="range"] { -webkit-appearance: auto; appearance: auto; accent-color: var(--green); }
+    input::placeholder { color: var(--dim); }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--green) !important; }
+    ::-webkit-scrollbar { display: none; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+    @keyframes shimmer { 0%,100% { opacity:0.4; } 50% { opacity:1; } }
+    .fu { animation: fadeUp 0.25s ease forwards; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+const ls = localStorage;
+
+// ── DEFAULTS ────────────────────────────────────────────────────────
+const DEFAULT_PLAN = {
+  newFrontPct: 15, newFrontCap: 6000,
+  usedFrontPct: 20, usedFrontCap: 7500,
+  backPct: 10, capsEnabled: true
+};
+
+// ── HELPERS ─────────────────────────────────────────────────────────
+const fmt = (n) => '$' + Math.round(Math.abs(Number(n)||0)).toLocaleString();
+const fmtD = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+};
+
+const calcGross = (deal, plan) => {
+  const front = Number(deal.front) || 0;
+  const back  = Number(deal.back)  || 0;
+  const isUsed = deal.type === 'used';
+  const pct = isUsed ? plan.usedFrontPct/100 : plan.newFrontPct/100;
+  const cap = isUsed ? plan.usedFrontCap    : plan.newFrontCap;
+  const frontComm = plan.capsEnabled ? Math.min(front * pct, cap) : front * pct;
+  return Math.round(frontComm + back * plan.backPct/100);
+};
+const calcMyComm = (deal, plan) => Math.round(calcGross(deal,plan) * (Number(deal.split_pct)||100) / 100);
+const isCapped = (deal, plan) => {
+  if (!plan.capsEnabled) return false;
+  const front = Number(deal.front) || 0;
+  const isUsed = deal.type === 'used';
+  const pct = isUsed ? plan.usedFrontPct/100 : plan.newFrontPct/100;
+  const cap = isUsed ? plan.usedFrontCap    : plan.newFrontCap;
+  return front * pct > cap;
+};
+
+const getMonth = () => { const d=new Date(); return {m:d.getMonth(),y:d.getFullYear()}; };
+const getYear  = () => new Date().getFullYear();
+
+// ── OCR / PDF PARSING ────────────────────────────────────────────────
+const extractFields = (txt) => {
+  const get = (rx) => { const m=txt.match(rx); return m?m[1].trim():''; };
+  const rawDate = get(/Date\s*Sold[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i)
+               || get(/(?:Sale|Contract|Deal)\s*Date[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i)
+               || get(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
+  let date = new Date().toISOString().split('T')[0];
+  if (rawDate) { const d=new Date(rawDate); if(!isNaN(d)) date=d.toISOString().split('T')[0]; }
+  const vehicle = get(/((?:19[5-9]|20[0-2])\d\s+[A-Za-z][A-Za-z\s]{4,40}?)(?:\s*\d+\s*dr|\s*4WD|\s*AWD|\n|VIN|Stock|Mileage)/i)
+               || get(/((?:19[5-9]|20[0-2])\d\s+[A-Za-z][A-Za-z\s]{4,40}?)(?:\s{2,})/i);
+  const stockNum = get(/Stock\s*(?:Number|#|No\.?)[:\s]+([A-Z0-9\-]{4,14})/i) || get(/Stock[:\s]+([A-Z0-9\-]{4,14})/i);
+  const typeRaw = get(/New\s*[\/|]\s*Used[:\s]+(New|Used)/i) || '';
+  const type = (typeRaw||txt).toLowerCase().includes('used') ? 'used' : 'new';
+  const frontM = txt.match(/Front\s*(?:End\s*)?(?:Gross|Profit)[:\s]+\$?([\d,]+\.?\d*)/i) || txt.match(/Front[:\s]+\$?([\d,]+\.?\d*)/i);
+  const front = frontM ? frontM[1].replace(/,/g,'') : '';
+  const backIdx = txt.toLowerCase().indexOf('back gross:');
+  let back = '';
+  if (backIdx >= 0) { const a=txt.slice(backIdx+11); const bm=a.match(/\$?([\d,]+\.\d{2})/); if(bm) back=bm[1].replace(/,/g,''); }
+  if (!back) {
+    const bm2 = txt.match(/Back\s*(?:End\s*)?(?:Gross|Profit)[:\s]+\$?([\d,]+\.?\d*)/i)
+             || txt.match(/F&?\s*I\s*(?:Gross|Income|Total)[:\s]+\$?([\d,]+\.?\d*)/i)
+             || txt.match(/Reserve[:\s]+\$?([\d,]+\.?\d*)/i);
+    if (bm2) back = bm2[1].replace(/,/g,'');
+  }
+  const salesperson = get(/Salesperson[:\s]+([A-Za-z][A-Za-z\s]{2,28}?)(?:\n|Date Sold|$)/i);
+  const dealNum = get(/DMS\s*ID[:\s]+(\d{4,10})/i) || get(/Deal\s*(?:#|No\.?|Number)[:\s]+([A-Z0-9\-]{3,12})/i);
+  const notes = [dealNum?'Deal #'+dealNum:'', salesperson?'Sold by: '+salesperson.trim():''].filter(Boolean).join(' · ');
+  return { date, vehicle:(vehicle||'').replace(/\s+/g,' ').trim(), stockNum:stockNum||'', type, front, back, notes };
+};
+
+// ── EMPTY OBJECTS ───────────────────────────────────────────────────
+const emptyDeal  = () => ({ date:new Date().toISOString().split('T')[0], vehicle:'', stockNum:'', type:'new', front:'', back:'', split_pct:100, split_with:'', notes:'' });
+const emptySpiff = () => ({ date:new Date().toISOString().split('T')[0], description:'', amount:'' });
+
+// ── SHARED STYLES ───────────────────────────────────────────────────
+const inp = { width:"100%", padding:"13px 14px", background:"var(--surface3)", border:"1px solid var(--border2)", borderRadius:10, color:"var(--text)", fontSize:15 };
+const lbl = { fontSize:11, color:"var(--muted)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:7, display:"block" };
+const btn = (color='green') => ({
+  width:"100%", padding:"15px", border:"none", borderRadius:12, fontSize:15, fontWeight:600, cursor:"pointer",
+  background: color==='green'?'var(--green)' : color==='amber'?'var(--amber)' : 'var(--surface3)',
+  color: color==='surface'?'var(--text)':'#000'
+});
+
+// ── COMMISSION PREVIEW ──────────────────────────────────────────────
+function CommPreview({deal, plan}) {
+  const front = Number(deal.front)||0;
+  const back  = Number(deal.back)||0;
+  if (!front && !back) return null;
+  const gross  = calcGross(deal, plan);
+  const mine   = calcMyComm(deal, plan);
+  const capped = isCapped(deal, plan);
+  const split  = Number(deal.split_pct)||100;
+  return (
+    <div style={{background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:"var(--r)",padding:"16px",marginTop:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontSize:11,color:"var(--green)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>
+            {split<100?'My Share ('+split+'%)':'My Commission'}
+          </div>
+          <div style={{fontSize:36,fontWeight:700,color:"var(--green)",lineHeight:1}}>{fmt(mine)}</div>
+          {split<100 && <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>Gross total: {fmt(gross)}</div>}
+        </div>
+        {capped && (
+          <div style={{background:"var(--amber-bg)",border:"1px solid var(--amber-border)",borderRadius:8,padding:"5px 11px",fontSize:11,color:"var(--amber)",fontWeight:600}}>
+            ⚡ Capped
+          </div>
+        )}
+      </div>
+      <div style={{display:"flex",gap:16,marginTop:10,paddingTop:10,borderTop:"1px solid rgba(34,197,94,0.15)"}}>
+        {front>0 && <div style={{fontSize:11,color:"var(--muted)"}}>Front: <span style={{color:"var(--text)"}}>{fmt(front)}</span></div>}
+        {back>0  && <div style={{fontSize:11,color:"var(--muted)"}}>Back: <span style={{color:"var(--text)"}}>{fmt(back)}</span></div>}
+      </div>
+    </div>
+  );
+}
+
+// ── DEAL ROW ─────────────────────────────────────────────────────────
+function DealRow({deal, plan, onRemove}) {
+  const mine   = calcMyComm(deal, plan);
+  const capped = isCapped(deal, plan);
+  const split  = Number(deal.split_pct)||100;
+  return (
+    <div className="fu" style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+            {deal.vehicle || 'Vehicle'}
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:11,color:"var(--muted)"}}>{fmtD(deal.date)}</span>
+            <span style={{fontSize:10,background:deal.type==='new'?"var(--blue-bg)":"var(--amber-bg)",color:deal.type==='new'?"var(--blue)":"var(--amber)",border:`1px solid ${deal.type==='new'?"var(--blue-border)":"var(--amber-border)"}`,borderRadius:5,padding:"1px 7px",fontWeight:500,letterSpacing:"0.04em"}}>
+              {deal.type==='new'?'NEW':'USED'}
+            </span>
+            {capped && <span style={{fontSize:10,background:"var(--amber-bg)",color:"var(--amber)",border:"1px solid var(--amber-border)",borderRadius:5,padding:"1px 7px"}}>⚡ Capped</span>}
+            {split<100 && <span style={{fontSize:10,color:"var(--muted)"}}>Split {split}%{deal.split_with?' w/ '+deal.split_with:''}</span>}
+          </div>
+          {(deal.front||deal.back) && (
+            <div style={{fontSize:11,color:"var(--dim)",marginTop:5}}>
+              {deal.front?'F: '+fmt(deal.front):''}{deal.front&&deal.back?' · ':''}{deal.back?'B: '+fmt(deal.back):''}
+            </div>
+          )}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+          <div style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{fmt(mine)}</div>
+          <button onClick={onRemove} style={{background:"none",border:"none",color:"var(--dim)",fontSize:14,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>✕</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── LOG DEAL MODAL ───────────────────────────────────────────────────
+function LogDealModal({onClose, onSave, plan, initial}) {
+  const [form, setForm] = useState(initial || emptyDeal());
+  const s = (k,v) => setForm(f=>({...f,[k]:v}));
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:600,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"var(--surface)",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:430,maxHeight:"92vh",overflowY:"auto",padding:"22px 20px 48px"}}>
+        <div style={{width:36,height:4,background:"var(--surface3)",borderRadius:2,margin:"0 auto 20px"}} />
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+          <div style={{fontSize:18,fontWeight:600}}>{initial?'Review Import':'Log Deal'}</div>
+          <button onClick={onClose} style={{background:"var(--surface2)",border:"none",color:"var(--muted)",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+
+        {/* Date + Vehicle */}
+        <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:14}}>
+          <div>
+            <label style={lbl}>Date</label>
+            <input type="date" value={form.date} onChange={e=>s('date',e.target.value)} style={inp} />
+          </div>
+          <div>
+            <label style={lbl}>Vehicle</label>
+            <input value={form.vehicle} onChange={e=>s('vehicle',e.target.value)} placeholder="2025 Lamborghini Urus" style={inp} />
+          </div>
+          <div>
+            <label style={lbl}>Stock #</label>
+            <input value={form.stockNum} onChange={e=>s('stockNum',e.target.value)} placeholder="LP12345" style={inp} />
+          </div>
+        </div>
+
+        {/* New / Used toggle */}
+        <div style={{marginBottom:14}}>
+          <label style={lbl}>Type</label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {['new','used'].map(t=>(
+              <button key={t} onClick={()=>s('type',t)} style={{padding:"13px",border:`1px solid ${form.type===t?"var(--blue-border)":"var(--border2)"}`,borderRadius:10,background:form.type===t?"var(--blue-bg)":"var(--surface3)",color:form.type===t?"var(--blue)":"var(--muted)",fontSize:14,fontWeight:form.type===t?600:400,cursor:"pointer",textTransform:"capitalize"}}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Front + Back */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
+          <div>
+            <label style={lbl}>Front Gross ($)</label>
+            <input type="number" value={form.front} onChange={e=>s('front',e.target.value)} placeholder="0" style={inp} />
+          </div>
+          <div>
+            <label style={lbl}>Back Gross ($)</label>
+            <input type="number" value={form.back} onChange={e=>s('back',e.target.value)} placeholder="0" style={inp} />
+          </div>
+        </div>
+
+        <CommPreview deal={form} plan={plan} />
+
+        {/* Split */}
+        <div style={{marginTop:18,paddingTop:18,borderTop:"1px solid var(--border)"}}>
+          <label style={lbl}>Split Deal</label>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:form.split_pct<100?12:0}}>
+            {[100,70,60,50].map(p=>(
+              <button key={p} onClick={()=>s('split_pct',p)} style={{padding:"10px 4px",border:`1px solid ${form.split_pct===p?"var(--green-border)":"var(--border2)"}`,borderRadius:10,background:form.split_pct===p?"var(--green-bg)":"var(--surface3)",color:form.split_pct===p?"var(--green)":"var(--muted)",fontSize:12,fontWeight:form.split_pct===p?600:400,cursor:"pointer"}}>
+                {p===100?'None':p+'%'}
+              </button>
+            ))}
+          </div>
+          {form.split_pct<100 && (
+            <input value={form.split_with} onChange={e=>s('split_with',e.target.value)} placeholder="Partner name" style={inp} />
+          )}
+        </div>
+
+        {/* Notes */}
+        <div style={{marginTop:14}}>
+          <label style={lbl}>Notes</label>
+          <input value={form.notes} onChange={e=>s('notes',e.target.value)} placeholder="Customer, deal number, notes…" style={inp} />
+        </div>
+
+        <button onClick={()=>onSave({...form,id:Date.now()})} style={{...btn('green'),marginTop:20}}>
+          {initial?'Add to My Numbers':'Save Deal'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── IMPORT MODAL ─────────────────────────────────────────────────────
+function ImportModal({onClose, onSave, plan}) {
+  const [stage, setStage] = useState('pick');
+  const [error, setError] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const pdfRef = useRef(null);
+  const imgRef = useRef(null);
+
+  const parse = async (file) => {
+    setStage('parsing'); setError(null);
+    try {
+      let text = '';
+      if (file.type==='application/pdf' || file.name?.endsWith('.pdf')) {
+        const pdfjsLib = window['pdfjs-dist/build/pdf'];
+        if (!pdfjsLib) throw new Error('PDF library not loaded. Refresh and try again.');
+        const ab = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({data:ab}).promise;
+        for (let p=1; p<=Math.min(pdf.numPages,4); p++) {
+          const page = await pdf.getPage(p);
+          const tc = await page.getTextContent();
+          text += tc.items.map(i=>i.str).join(' ') + '\n';
+        }
+        if (text.replace(/\s/g,'').length < 80) {
+          const page = await pdf.getPage(1);
+          const vp = page.getViewport({scale:2.5});
+          const canvas = document.createElement('canvas');
+          canvas.width=vp.width; canvas.height=vp.height;
+          await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+          if (!window.Tesseract) throw new Error('OCR not loaded. Refresh and try again.');
+          const r = await window.Tesseract.recognize(canvas.toDataURL(),'eng',{logger:()=>{}});
+          text = r.data.text;
+        }
+      } else {
+        if (!window.Tesseract) throw new Error('OCR not loaded. Refresh and try again.');
+        const dataUrl = await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=e=>res(e.target.result); fr.onerror=rej; fr.readAsDataURL(file); });
+        const r = await window.Tesseract.recognize(dataUrl,'eng',{logger:()=>{}});
+        text = r.data.text;
+      }
+      const fields = extractFields(text);
+      setDraft(fields);
+      setStage('review');
+    } catch(e) {
+      setError('Could not read file: ' + e.message);
+      setStage('pick');
+    }
+  };
+
+  if (stage==='review' && draft) {
+    return <LogDealModal onClose={onClose} onSave={onSave} plan={plan} initial={draft} />;
+  }
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:600,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"var(--surface)",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:430,padding:"22px 20px 48px"}}>
+        <div style={{width:36,height:4,background:"var(--surface3)",borderRadius:2,margin:"0 auto 20px"}} />
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+          <div style={{fontSize:18,fontWeight:600}}>Import Deal Sheet</div>
+          <button onClick={onClose} style={{background:"var(--surface2)",border:"none",color:"var(--muted)",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+
+        {stage==='pick' && (
+          <>
+            <input ref={pdfRef} type="file" accept=".pdf,application/pdf" onChange={e=>{const f=e.target.files[0];if(f)parse(f);e.target.value='';}} style={{display:"none"}} />
+            <input ref={imgRef} type="file" accept="image/*" capture="environment" onChange={e=>{const f=e.target.files[0];if(f)parse(f);e.target.value='';}} style={{display:"none"}} />
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+              <button onClick={()=>imgRef.current?.click()} style={{padding:"28px 16px",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:14,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+                <span style={{fontSize:36}}>📸</span>
+                <div>
+                  <div style={{fontSize:14,fontWeight:500,color:"var(--text)",marginBottom:3}}>Take Photo</div>
+                  <div style={{fontSize:11,color:"var(--muted)"}}>Camera or Gallery</div>
+                </div>
+              </button>
+              <button onClick={()=>pdfRef.current?.click()} style={{padding:"28px 16px",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:14,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+                <span style={{fontSize:36}}>📄</span>
+                <div>
+                  <div style={{fontSize:14,fontWeight:500,color:"var(--text)",marginBottom:3}}>Upload PDF</div>
+                  <div style={{fontSize:11,color:"var(--muted)"}}>From Files app</div>
+                </div>
+              </button>
+            </div>
+            {error && (
+              <div style={{background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:10,padding:"12px 14px",fontSize:13,color:"var(--red)",marginBottom:12}}>
+                {error}
+              </div>
+            )}
+            <div style={{fontSize:11,color:"var(--dim)",textAlign:"center",lineHeight:1.6}}>
+              Works with CDK, Reynolds, Elead, DealerSocket and most DMS formats
+            </div>
+          </>
+        )}
+
+        {stage==='parsing' && (
+          <div style={{textAlign:"center",padding:"40px 0"}}>
+            <div style={{width:48,height:48,border:"3px solid var(--surface3)",borderTopColor:"var(--green)",borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 18px"}} />
+            <div style={{fontSize:15,fontWeight:500,marginBottom:6}}>Reading deal sheet</div>
+            <div style={{fontSize:12,color:"var(--muted)"}}>Photos may take 10–20 seconds</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── LOG SPIFF MODAL ──────────────────────────────────────────────────
+function LogSpiffModal({onClose, onSave}) {
+  const [form, setForm] = useState(emptySpiff());
+  const s = (k,v) => setForm(f=>({...f,[k]:v}));
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:600,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"var(--surface)",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:430,padding:"22px 20px 48px"}}>
+        <div style={{width:36,height:4,background:"var(--surface3)",borderRadius:2,margin:"0 auto 20px"}} />
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+          <div style={{fontSize:18,fontWeight:600}}>Log Spiff / Bonus</div>
+          <button onClick={onClose} style={{background:"var(--surface2)",border:"none",color:"var(--muted)",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>s('date',e.target.value)} style={inp} /></div>
+          <div><label style={lbl}>Description</label><input value={form.description} onChange={e=>s('description',e.target.value)} placeholder="Model spiff, contest bonus, weekend special…" style={inp} /></div>
+          <div><label style={lbl}>Amount ($)</label><input type="number" value={form.amount} onChange={e=>s('amount',e.target.value)} placeholder="500" style={inp} /></div>
+        </div>
+        <button onClick={()=>{if(!form.amount)return;onSave({...form,id:Date.now(),amount:Number(form.amount)});}} style={{...btn('amber'),marginTop:20}}>
+          Save Spiff
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── HOME SCREEN ──────────────────────────────────────────────────────
+function HomeScreen({deals, spiffs, plan, onImport, onLogDeal, onLogSpiff}) {
+  const {m,y} = getMonth();
+  const yr = getYear();
+  const mtdDeals   = deals.filter(d=>{const dt=new Date(d.date+'T00:00:00');return dt.getMonth()===m&&dt.getFullYear()===y;});
+  const ytdDeals   = deals.filter(d=>new Date(d.date+'T00:00:00').getFullYear()===yr);
+  const mtdSpiffs  = spiffs.filter(s=>{const dt=new Date(s.date+'T00:00:00');return dt.getMonth()===m&&dt.getFullYear()===y;});
+  const ytdSpiffs  = spiffs.filter(s=>new Date(s.date+'T00:00:00').getFullYear()===yr);
+  const mtdDealPay = mtdDeals.reduce((s,d)=>s+calcMyComm(d,plan),0);
+  const mtdSpiffPay= mtdSpiffs.reduce((s,sp)=>s+(Number(sp.amount)||0),0);
+  const mtdTotal   = mtdDealPay + mtdSpiffPay;
+  const ytdTotal   = ytdDeals.reduce((s,d)=>s+calcMyComm(d,plan),0) + ytdSpiffs.reduce((s,sp)=>s+(Number(sp.amount)||0),0);
+  const avgDeal    = mtdDeals.length>0?Math.round(mtdDealPay/mtdDeals.length):0;
+  const recent     = [...deals].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
+  const monthName  = new Date().toLocaleDateString('en-US',{month:'long'});
+
+  return (
+    <div style={{padding:"28px 16px 0",paddingBottom:"calc(var(--nav-h) + 24px)"}}>
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24}}>
+        <div>
+          <div style={{fontSize:12,color:"var(--green)",fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:2}}>EarnIQ</div>
+          <div style={{fontSize:22,fontWeight:700}}>{monthName}</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={onLogSpiff} style={{background:"var(--amber-bg)",border:"1px solid var(--amber-border)",borderRadius:9,color:"var(--amber)",fontSize:12,fontWeight:500,padding:"9px 13px",cursor:"pointer"}}>+ Spiff</button>
+          <button onClick={onLogDeal}  style={{background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:9,color:"var(--green)",fontSize:12,fontWeight:600,padding:"9px 13px",cursor:"pointer"}}>+ Deal</button>
+        </div>
+      </div>
+
+      {/* MTD big card */}
+      <div style={{background:"linear-gradient(135deg,#0d1f0f 0%,#0a1a0c 100%)",border:"1px solid var(--green-border)",borderRadius:18,padding:"24px",marginBottom:12}}>
+        <div style={{fontSize:11,color:"rgba(34,197,94,0.6)",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:10}}>Month to Date</div>
+        <div style={{fontSize:52,fontWeight:700,color:"var(--green)",lineHeight:1,marginBottom:8}}>{fmt(mtdTotal)}</div>
+        <div style={{display:"flex",gap:16}}>
+          <span style={{fontSize:13,color:"rgba(34,197,94,0.5)"}}>{mtdDeals.length} deal{mtdDeals.length!==1?'s':''}</span>
+          {mtdSpiffPay>0 && <span style={{fontSize:13,color:"rgba(245,158,11,0.6)"}}>+ {fmt(mtdSpiffPay)} spiffs</span>}
+        </div>
+      </div>
+
+      {/* Stats row */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:20}}>
+        <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:"16px"}}>
+          <div style={{fontSize:10,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:7}}>Year to Date</div>
+          <div style={{fontSize:24,fontWeight:700}}>{fmt(ytdTotal)}</div>
+          <div style={{fontSize:11,color:"var(--dim)",marginTop:3}}>{ytdDeals.length} total deals</div>
+        </div>
+        <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:"16px"}}>
+          <div style={{fontSize:10,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:7}}>Avg / Deal</div>
+          <div style={{fontSize:24,fontWeight:700}}>{avgDeal>0?fmt(avgDeal):'—'}</div>
+          <div style={{fontSize:11,color:"var(--dim)",marginTop:3}}>this month</div>
+        </div>
+      </div>
+
+      {/* Import button */}
+      <button onClick={onImport} style={{width:"100%",padding:"15px",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:12,color:"var(--text)",fontSize:14,fontWeight:500,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:24}}>
+        <span>📄</span> Import Deal Sheet
+      </button>
+
+      {/* Recent */}
+      {recent.length>0 && (
+        <>
+          <div style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12}}>Recent Deals</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {recent.map(d=>(
+              <div key={d.id} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:12,padding:"13px 15px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>{d.vehicle||'Vehicle'}</div>
+                  <div style={{fontSize:11,color:"var(--muted)"}}>{fmtD(d.date)} · <span style={{color:d.type==='new'?"var(--blue)":"var(--amber)"}}>{d.type==='new'?'New':'Used'}</span></div>
+                </div>
+                <div style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{fmt(calcMyComm(d,plan))}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {deals.length===0 && (
+        <div style={{textAlign:"center",paddingTop:40}}>
+          <div style={{fontSize:48,marginBottom:14}}>💰</div>
+          <div style={{fontSize:16,fontWeight:500,marginBottom:6}}>No deals yet</div>
+          <div style={{fontSize:13,color:"var(--muted)",lineHeight:1.6}}>Import a deal sheet or tap + Deal<br/>to log your first commission</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DEALS SCREEN ─────────────────────────────────────────────────────
+function DealsScreen({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onImport, onLogDeal, onLogSpiff}) {
+  const [filter, setFilter] = useState('mtd');
+  const {m,y} = getMonth();
+  const yr = getYear();
+
+  const filteredDeals = deals.filter(d=>{
+    if (filter==='all') return true;
+    const dt=new Date(d.date+'T00:00:00');
+    return filter==='mtd' ? dt.getMonth()===m&&dt.getFullYear()===y : dt.getFullYear()===yr;
+  });
+  const filteredSpiffs = spiffs.filter(s=>{
+    if (filter==='all') return true;
+    const dt=new Date(s.date+'T00:00:00');
+    return filter==='mtd' ? dt.getMonth()===m&&dt.getFullYear()===y : dt.getFullYear()===yr;
+  });
+  const sorted = [...filteredDeals].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const totalPay = filteredDeals.reduce((s,d)=>s+calcMyComm(d,plan),0) + filteredSpiffs.reduce((s,sp)=>s+(Number(sp.amount)||0),0);
+
+  return (
+    <div style={{padding:"28px 16px 0",paddingBottom:"calc(var(--nav-h) + 24px)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div style={{fontSize:22,fontWeight:700}}>Deal Log</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={onImport} style={{background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:9,color:"var(--muted)",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>📄 Import</button>
+          <button onClick={onLogDeal} style={{background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:9,color:"var(--green)",fontSize:12,fontWeight:600,padding:"8px 12px",cursor:"pointer"}}>+ Deal</button>
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+        {[['mtd','This Month'],['ytd','This Year'],['all','All Time']].map(([k,l])=>(
+          <button key={k} onClick={()=>setFilter(k)} style={{padding:"9px",border:`1px solid ${filter===k?"var(--green-border)":"var(--border)"}`,borderRadius:10,background:filter===k?"var(--green-bg)":"var(--surface)",color:filter===k?"var(--green)":"var(--muted)",fontSize:12,fontWeight:filter===k?600:400,cursor:"pointer"}}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* Total for period */}
+      {(filteredDeals.length>0||filteredSpiffs.length>0) && (
+        <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:12,padding:"13px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:12,color:"var(--muted)"}}>Total · {filteredDeals.length} deal{filteredDeals.length!==1?'s':''}{filteredSpiffs.length>0?' + '+filteredSpiffs.length+' spiff'+(filteredSpiffs.length!==1?'s':''):''}</span>
+          <span style={{fontSize:20,fontWeight:700,color:"var(--green)"}}>{fmt(totalPay)}</span>
+        </div>
+      )}
+
+      {/* Deals */}
+      {sorted.length>0 ? (
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:24}}>
+          {sorted.map(d=><DealRow key={d.id} deal={d} plan={plan} onRemove={()=>onRemoveDeal(d.id)} />)}
+        </div>
+      ) : (
+        <div style={{textAlign:"center",padding:"24px 0",color:"var(--dim)",fontSize:13,marginBottom:24}}>No deals in this period.</div>
+      )}
+
+      {/* Spiffs */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.08em"}}>Spiffs & Bonuses</div>
+        <button onClick={onLogSpiff} style={{background:"var(--amber-bg)",border:"1px solid var(--amber-border)",borderRadius:7,color:"var(--amber)",fontSize:11,fontWeight:500,padding:"6px 11px",cursor:"pointer"}}>+ Spiff</button>
+      </div>
+      {filteredSpiffs.length>0 ? (
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {[...filteredSpiffs].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(sp=>(
+            <div key={sp.id} style={{background:"var(--surface2)",border:"1px solid rgba(245,158,11,0.15)",borderRadius:12,padding:"13px 15px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>{sp.description||'Spiff'}</div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>{fmtD(sp.date)}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontSize:19,fontWeight:700,color:"var(--amber)"}}>{fmt(Number(sp.amount))}</div>
+                <button onClick={()=>onRemoveSpiff(sp.id)} style={{background:"none",border:"none",color:"var(--dim)",cursor:"pointer",fontSize:14,lineHeight:1,padding:"2px 4px"}}>✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{textAlign:"center",padding:"16px 0",color:"var(--dim)",fontSize:12}}>No spiffs logged.</div>
+      )}
+    </div>
+  );
+}
+
+// ── PAY PLAN SCREEN ──────────────────────────────────────────────────
+function PayPlanScreen({plan, setPlan}) {
+  const save = (k,v) => { const u={...plan,[k]:v}; setPlan(u); ls.setItem('earniq_plan',JSON.stringify(u)); };
+  const [test, setTest] = useState({type:'new',front:'',back:'',split_pct:100});
+
+  const Section = ({color, label, children}) => (
+    <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:16,padding:"18px",marginBottom:12}}>
+      <div style={{fontSize:11,color,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:16}}>{label}</div>
+      {children}
+    </div>
+  );
+
+  const Slider = ({label, field, min, max, step=1, prefix='', suffix='%'}) => (
+    <div style={{marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <span style={{fontSize:13,color:"var(--muted)"}}>{label}</span>
+        <span style={{fontSize:14,fontWeight:600}}>{prefix}{Number(plan[field]).toLocaleString()}{suffix}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={plan[field]}
+        onChange={e=>save(field,Number(e.target.value))}
+        style={{width:"100%"}} />
+    </div>
+  );
+
+  return (
+    <div style={{padding:"28px 16px 0",paddingBottom:"calc(var(--nav-h) + 24px)"}}>
+      <div style={{fontSize:22,fontWeight:700,marginBottom:24}}>Pay Plan</div>
+
+      <Section color="var(--blue)" label="New Vehicles">
+        <Slider label="Front End Commission" field="newFrontPct" min={5} max={35} suffix="%" />
+        <Slider label="Front End Cap" field="newFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
+      </Section>
+
+      <Section color="var(--amber)" label="Used Vehicles">
+        <Slider label="Front End Commission" field="usedFrontPct" min={5} max={35} suffix="%" />
+        <Slider label="Front End Cap" field="usedFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
+      </Section>
+
+      <Section color="var(--muted)" label="Back End">
+        <Slider label="Back End Commission" field="backPct" min={5} max={35} suffix="%" />
+      </Section>
+
+      {/* Caps toggle */}
+      <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:16,padding:"18px",marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>Enforce Front End Caps</div>
+            <div style={{fontSize:12,color:"var(--muted)"}}>Limits commission at the cap maximum</div>
+          </div>
+          <div onClick={()=>save('capsEnabled',!plan.capsEnabled)} style={{width:48,height:28,borderRadius:14,background:plan.capsEnabled?"var(--green)":"var(--surface3)",border:`1px solid ${plan.capsEnabled?"transparent":"var(--border2)"}`,position:"relative",cursor:"pointer",transition:"background 0.2s",flexShrink:0}}>
+            <div style={{position:"absolute",top:3,left:plan.capsEnabled?23:3,width:22,height:22,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 3px rgba(0,0,0,0.4)"}} />
+          </div>
+        </div>
+      </div>
+
+      {/* Deal calculator */}
+      <div style={{background:"var(--surface)",border:"1px solid var(--green-border)",borderRadius:16,padding:"18px",marginBottom:12}}>
+        <div style={{fontSize:11,color:"var(--green)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:16}}>Deal Calculator</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+          {['new','used'].map(t=>(
+            <button key={t} onClick={()=>setTest(td=>({...td,type:t}))} style={{padding:"11px",border:`1px solid ${test.type===t?"var(--blue-border)":"var(--border2)"}`,borderRadius:10,background:test.type===t?"var(--blue-bg)":"var(--surface3)",color:test.type===t?"var(--blue)":"var(--muted)",fontSize:13,fontWeight:test.type===t?600:400,cursor:"pointer",textTransform:"capitalize"}}>
+              {t}
+            </button>
+          ))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Front Gross</div>
+            <input type="number" placeholder="0" value={test.front} onChange={e=>setTest(td=>({...td,front:e.target.value}))} style={inp} />
+          </div>
+          <div>
+            <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Back Gross</div>
+            <input type="number" placeholder="0" value={test.back} onChange={e=>setTest(td=>({...td,back:e.target.value}))} style={inp} />
+          </div>
+        </div>
+        <CommPreview deal={test} plan={plan} />
+      </div>
+    </div>
+  );
+}
+
+// ── BOTTOM NAV ───────────────────────────────────────────────────────
+function Nav({tab, setTab}) {
+  const tabs = [
+    {key:'home',    icon:'💰', label:'Earnings'},
+    {key:'deals',   icon:'📋', label:'Deals'},
+    {key:'payplan', icon:'⚙️', label:'Pay Plan'},
+  ];
+  return (
+    <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,height:"var(--nav-h)",background:"var(--surface)",borderTop:"1px solid var(--border)",display:"flex",zIndex:400,paddingBottom:"max(env(safe-area-inset-bottom),0px)"}}>
+      {tabs.map(t=>(
+        <button key={t.key} onClick={()=>setTab(t.key)}
+          style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,background:"none",border:"none",cursor:"pointer",color:tab===t.key?"var(--green)":"var(--dim)",transition:"color 0.15s"}}>
+          <span style={{fontSize:22,lineHeight:1}}>{t.icon}</span>
+          <span style={{fontSize:10,fontWeight:tab===t.key?600:400,letterSpacing:"0.04em"}}>{t.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── APP ROOT ─────────────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState('home');
+  const [deals,  setDeals]  = useState(()=>{try{return JSON.parse(ls.getItem('earniq_deals')||'[]');}catch{return [];}});
+  const [spiffs, setSpiffs] = useState(()=>{try{return JSON.parse(ls.getItem('earniq_spiffs')||'[]');}catch{return [];}});
+  const [plan,   setPlan]   = useState(()=>{try{return {...DEFAULT_PLAN,...JSON.parse(ls.getItem('earniq_plan')||'{}')};}catch{return DEFAULT_PLAN;}});
+  const [showImport,   setShowImport]   = useState(false);
+  const [showLogDeal,  setShowLogDeal]  = useState(false);
+  const [showLogSpiff, setShowLogSpiff] = useState(false);
+
+  const saveDeals  = (u)=>{setDeals(u);  ls.setItem('earniq_deals',  JSON.stringify(u));};
+  const saveSpiffs = (u)=>{setSpiffs(u); ls.setItem('earniq_spiffs', JSON.stringify(u));};
+
+  const addDeal   = (d)=>{ saveDeals([d,...deals]);   setShowLogDeal(false);  setShowImport(false); };
+  const removeDeal= (id)=>saveDeals(deals.filter(d=>d.id!==id));
+  const addSpiff  = (s)=>{ saveSpiffs([s,...spiffs]); setShowLogSpiff(false); };
+  const removeSpiff=(id)=>saveSpiffs(spiffs.filter(s=>s.id!==id));
+
+  const shared = {deals, spiffs, plan, onImport:()=>setShowImport(true), onLogDeal:()=>setShowLogDeal(true), onLogSpiff:()=>setShowLogSpiff(true)};
+
+  return (
+    <div>
+      {tab==='home'    && <HomeScreen    {...shared} />}
+      {tab==='deals'   && <DealsScreen   {...shared} onRemoveDeal={removeDeal} onRemoveSpiff={removeSpiff} />}
+      {tab==='payplan' && <PayPlanScreen plan={plan} setPlan={setPlan} />}
+      <Nav tab={tab} setTab={setTab} />
+      {showImport   && <ImportModal   onClose={()=>setShowImport(false)}   onSave={addDeal}   plan={plan} />}
+      {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
+      {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
+    </div>
+  );
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+</script>
+</body>
+</html>
