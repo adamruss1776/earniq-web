@@ -323,6 +323,7 @@ const ICONS = {
   fire:   ["M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"],
   users:  ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2","M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z","M22 21v-2a4 4 0 0 0-3-3.87","M16 3.13a4 4 0 0 1 0 7.75"],
   out:    ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4","M16 17l5-5-5-5","M21 12H9"],
+  binder: ["M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"],
 };
 
 // ── PROGRESS RING ───────────────────────────────────────────────────
@@ -1225,10 +1226,170 @@ function PayPlanView({plan, setPlan}) {
   );
 }
 
+// ── WASHOUT BINDER ──────────────────────────────────────────────────
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function WashoutUploadModal({onClose, onSaved, uid}) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth()+1);
+  const [year, setYear]   = useState(now.getFullYear());
+  const [notes, setNotes] = useState('');
+  const [file, setFile]   = useState(null);
+  const [busy, setBusy]   = useState(false);
+  const [error, setError] = useState(null);
+  const fileRef = useRef(null);
+  const years = Array.from({length:6},(_,i)=>now.getFullYear()-i);
+
+  const save = async () => {
+    if (!file) { setError('Pick a photo or PDF of your washout sheet first.'); return; }
+    setBusy(true); setError(null);
+    try {
+      const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase() : 'jpg';
+      const path = uid + '/' + year + '-' + String(month).padStart(2,'0') + '-' + Date.now() + '.' + ext;
+      const up = await sb.storage.from('washouts').upload(path, file, {contentType: file.type || undefined});
+      if (up.error) throw up.error;
+      const ins = await sb.from('washouts').insert({user_id:uid, month, year, file_path:path, mime_type:file.type||'', notes}).select().single();
+      if (ins.error) throw ins.error;
+      onSaved(ins.data);
+    } catch(e) { setError('Upload failed: ' + (e.message||'unknown error')); setBusy(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} title="Add Washout Sheet">
+      <input ref={fileRef} type="file" accept="image/*,.pdf,application/pdf" onChange={e=>{const f=e.target.files[0]; if(f) setFile(f); e.target.value='';}} style={{display:"none"}} />
+      <button onClick={()=>fileRef.current&&fileRef.current.click()} style={{width:"100%",padding:"26px 16px",background:"var(--surface2)",border:`1px dashed ${file?"var(--green-border)":"var(--border2)"}`,borderRadius:14,cursor:"pointer",marginBottom:16,color:"var(--text)"}}>
+        <div style={{fontSize:30,marginBottom:8}}>{file?'📎':'📄'}</div>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>{file ? (file.name||'Sheet selected') : 'Tap to choose photo or PDF'}</div>
+        <div style={{fontSize:11,color:"var(--muted)"}}>{file ? 'Tap again to swap it' : 'The month-end sheet your manager gave you'}</div>
+      </button>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+        <div>
+          <label style={lbl}>Month</label>
+          <select value={month} onChange={e=>setMonth(Number(e.target.value))} style={inp}>
+            {MONTH_NAMES.map((mn,i)=><option key={mn} value={i+1}>{mn}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lbl}>Year</label>
+          <select value={year} onChange={e=>setYear(Number(e.target.value))} style={inp}>
+            {years.map(yy=><option key={yy} value={yy}>{yy}</option>)}
+          </select>
+        </div>
+      </div>
+      <div style={{marginBottom:4}}>
+        <label style={lbl}>Notes (optional)</label>
+        <input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Bonus month, disputed spiff, etc." style={inp} />
+      </div>
+      {error && (
+        <div style={{background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:10,padding:"11px 14px",fontSize:12.5,color:"var(--red)",marginTop:12}}>{error}</div>
+      )}
+      <button disabled={busy} onClick={save} style={{...btn('green'),marginTop:18,opacity:busy?0.6:1}}>
+        {busy ? 'Uploading…' : 'File it in the binder'}
+      </button>
+    </Modal>
+  );
+}
+
+function WashoutView({uid}) {
+  const [sheets, setSheets] = useState(null); // null = still loading
+  const [showUpload, setShowUpload] = useState(false);
+  const [viewing, setViewing] = useState(null); // {sheet, url}
+  const [err, setErr] = useState(null);
+
+  useEffect(()=>{ (async()=>{
+    const {data, error} = await sb.from('washouts').select('*')
+      .order('year',{ascending:false}).order('month',{ascending:false}).order('created_at',{ascending:false});
+    if (error) { setErr('Could not load your binder: '+error.message); setSheets([]); return; }
+    setSheets(data||[]);
+  })(); }, [uid]);
+
+  const openSheet = async (sh) => {
+    const {data, error} = await sb.storage.from('washouts').createSignedUrl(sh.file_path, 3600);
+    if (error) { setErr('Could not open sheet: '+error.message); return; }
+    if ((sh.mime_type||'').includes('pdf') || sh.file_path.endsWith('.pdf')) window.open(data.signedUrl, '_blank');
+    else setViewing({sheet:sh, url:data.signedUrl});
+  };
+  const removeSheet = async (sh) => {
+    if (!window.confirm('Remove this washout sheet from your binder?')) return;
+    await sb.storage.from('washouts').remove([sh.file_path]);
+    const {error} = await sb.from('washouts').delete().eq('id', sh.id);
+    if (error) { setErr('Could not remove: '+error.message); return; }
+    setSheets(prev=>prev.filter(x=>x.id!==sh.id));
+  };
+
+  const byYear = {};
+  (sheets||[]).forEach(sh=>{ (byYear[sh.year] = byYear[sh.year]||[]).push(sh); });
+  const years = Object.keys(byYear).sort((a,b)=>b-a);
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:6}}>
+        <div style={{fontSize:25,fontWeight:700,letterSpacing:"-0.02em"}}>Washout Binder</div>
+        <button onClick={()=>setShowUpload(true)} style={pillBtn('green')}>+ Add Sheet</button>
+      </div>
+      <div style={{fontSize:13,color:"var(--muted)",marginBottom:24}}>
+        Every month-end sheet your manager hands you, filed and safe. <span style={{color:"var(--green)"}}>⚡ AI Compare — coming soon:</span> EarnIQ will read the sheet and flag anything that doesn't match your log.
+      </div>
+
+      {sheets===null ? (
+        <div style={{textAlign:"center",padding:"80px 0"}}>
+          <div style={{width:44,height:44,border:"3px solid var(--surface3)",borderTopColor:"var(--green)",borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 16px"}} />
+        </div>
+      ) : sheets.length===0 ? (
+        <div className="card" style={{textAlign:"center",padding:"56px 24px"}}>
+          <div style={{fontSize:40,marginBottom:12}}>📒</div>
+          <div style={{fontSize:16,fontWeight:600,marginBottom:6}}>Your binder is empty</div>
+          <div style={{fontSize:13,color:"var(--muted)",maxWidth:400,margin:"0 auto 20px",lineHeight:1.6}}>
+            Snap the washout sheet your manager gives you at month end. Keep every one — it's your paper trail if a payout ever looks short.
+          </div>
+          <button onClick={()=>setShowUpload(true)} style={{...pillBtn('green'),padding:"12px 22px"}}>+ Add your first sheet</button>
+        </div>
+      ) : (
+        years.map(yy=>(
+          <div key={yy} style={{marginBottom:26}}>
+            <div style={{...secLbl,marginBottom:12}}>{yy}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:12}}>
+              {byYear[yy].map(sh=>(
+                <div key={sh.id} className="card fu" style={{padding:"16px 18px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div>
+                      <div style={{fontSize:15,fontWeight:600}}>{MONTH_NAMES[sh.month-1]}</div>
+                      <div style={{fontSize:11,color:"var(--dim)",marginTop:2}}>Added {fmtD(sh.created_at.split('T')[0])}</div>
+                    </div>
+                    <span style={{fontSize:20}}>📒</span>
+                  </div>
+                  {sh.notes && <div style={{fontSize:12,color:"var(--muted)",marginBottom:10,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sh.notes}</div>}
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>openSheet(sh)} style={{...pillBtn(),flex:1}}>View sheet</button>
+                    <button onClick={()=>removeSheet(sh)} title="Remove" style={{background:"none",border:"none",color:"var(--dim)",fontSize:13,cursor:"pointer",padding:"2px 6px"}}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+
+      {showUpload && <WashoutUploadModal uid={uid} onClose={()=>setShowUpload(false)} onSaved={(row)=>{ setSheets(prev=>[row,...(prev||[])].sort((a,b)=>b.year-a.year || b.month-a.month)); setShowUpload(false); }} />}
+      {viewing && (
+        <Modal onClose={()=>setViewing(null)} title={MONTH_NAMES[viewing.sheet.month-1]+' '+viewing.sheet.year+' washout'} maxWidth={720}>
+          <img src={viewing.url} alt="Washout sheet" style={{width:"100%",borderRadius:12,border:"1px solid var(--border2)"}} />
+        </Modal>
+      )}
+      {err && (
+        <div onClick={()=>setErr(null)} style={{position:"fixed",bottom:18,right:18,zIndex:800,background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.35)",color:"var(--red)",borderRadius:12,padding:"13px 16px",fontSize:13,maxWidth:340,cursor:"pointer"}}>
+          {err} <span style={{color:"var(--dim)",marginLeft:6}}>✕</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SIDEBAR + MOBILE NAV ────────────────────────────────────────────
 const NAV_ITEMS = [
   {key:'dash',    label:'Dashboard', icon:'dash'},
   {key:'deals',   label:'Deal Log',  icon:'deals'},
+  {key:'binder',  label:'Washouts',  icon:'binder'},
   {key:'goals',   label:'Goals',     icon:'goals'},
   {key:'payplan', label:'Pay Plan',  icon:'plan'},
 ];
@@ -1710,6 +1871,7 @@ function Workspace({session, recovery, clearRecovery}) {
               {view==='deals'   && <DealsView deals={deals} spiffs={spiffs} plan={plan} onRemoveDeal={removeDeal} onRemoveSpiff={removeSpiff} onEditDeal={setEditDeal} {...actions} />}
               {view==='goals'   && <GoalsView stats={stats} goals={goals} setGoals={saveGoals} />}
               {view==='payplan' && <PayPlanView plan={plan} setPlan={savePlan} />}
+              {view==='binder'  && <WashoutView uid={uid} />}
               {view==='admin'   && isAdmin && <AdminView />}
             </React.Fragment>
           )}
