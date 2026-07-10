@@ -1240,7 +1240,7 @@ function AuthScreen() {
           <div style={{display:"flex",flexDirection:"column",gap:13}}>
             {mode==='signup' && (
               <div><label style={lbl}>Your Name</label>
-                <input value={name} onChange={e=>setName(e.target.value)} placeholder="Adam Russell" style={inp} /></div>
+                <input value={name} onChange={e=>setName(e.target.value)} placeholder="John Smith" style={inp} /></div>
             )}
             <div><label style={lbl}>Email</label>
               <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" style={inp}
@@ -1352,6 +1352,63 @@ function AdminView() {
 }
 
 // ── WORKSPACE (signed-in app) ────────────────────────────────────────
+// ── EARNIQ PRO (Stripe paywall) ──────────────────────────────────────
+const FREE_DEAL_LIMIT = 10; // free deals per calendar month
+const isProSub = (s) => !!s && ['active','trialing'].includes(s.status) && (!s.current_period_end || new Date(s.current_period_end) > new Date());
+
+function UpgradeModal({onClose, mtdCount}) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const go = async (plan) => {
+    setBusy(plan); setError(null);
+    try {
+      const {data:{session}} = await sb.auth.getSession();
+      const res = await fetch(SUPA_URL + '/functions/v1/create-checkout', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', 'Authorization':'Bearer '+session.access_token, 'apikey':SUPA_KEY},
+        body: JSON.stringify({plan})
+      });
+      const j = await res.json();
+      if (j.url) { window.location.href = j.url; return; }
+      throw new Error(j.error || 'No checkout link returned');
+    } catch(e) { setError('Could not start checkout: ' + e.message); setBusy(null); }
+  };
+  const planBtn = (active) => ({
+    width:"100%", textAlign:"left", padding:"16px 18px", borderRadius:14, cursor:"pointer",
+    background:"var(--surface2)", border:"1px solid var(--border2)", color:"var(--text)",
+    display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, opacity: busy && !active ? 0.5 : 1
+  });
+  return (
+    <Modal onClose={onClose} title="Upgrade to EarnIQ Pro" maxWidth={430}>
+      <div style={{fontSize:13.5, color:"var(--muted)", lineHeight:1.6, marginBottom:18}}>
+        You've logged <b style={{color:"var(--text)"}}>{mtdCount} deals</b> this month — that's the free limit. Pro gives you <b style={{color:"var(--text)"}}>unlimited deals</b>, so you never lose track mid-month.
+      </div>
+      <div style={{display:"flex", flexDirection:"column", gap:10}}>
+        <button disabled={!!busy} onClick={()=>go('annual')} style={{...planBtn(busy==='annual'), border:"1px solid var(--green-border)", background:"var(--green-bg)"}}>
+          <span>
+            <span style={{display:"block", fontSize:15, fontWeight:700}}>Annual — $29.99/yr</span>
+            <span style={{display:"block", fontSize:12, color:"var(--green)", marginTop:2}}>Works out to $2.50/mo · save 37%</span>
+          </span>
+          <span className="num" style={{fontSize:13, fontWeight:700, color:"var(--green)"}}>{busy==='annual' ? '…' : 'BEST VALUE'}</span>
+        </button>
+        <button disabled={!!busy} onClick={()=>go('monthly')} style={planBtn(busy==='monthly')}>
+          <span>
+            <span style={{display:"block", fontSize:15, fontWeight:700}}>Monthly — $3.99/mo</span>
+            <span style={{display:"block", fontSize:12, color:"var(--muted)", marginTop:2}}>Cancel anytime</span>
+          </span>
+          <span style={{fontSize:13, color:"var(--muted)"}}>{busy==='monthly' ? '…' : '→'}</span>
+        </button>
+      </div>
+      {error && (
+        <div style={{background:"var(--red-bg)", border:"1px solid rgba(239,68,68,0.25)", borderRadius:10, padding:"11px 14px", fontSize:12.5, color:"var(--red)", marginTop:14}}>{error}</div>
+      )}
+      <div style={{fontSize:11, color:"var(--dim)", textAlign:"center", marginTop:16, lineHeight:1.6}}>
+        Secure payment by Stripe. Your card details never touch our servers.
+      </div>
+    </Modal>
+  );
+}
+
 function Workspace({session, recovery, clearRecovery}) {
   const uid = session.user.id;
   const [view, setView] = useState('dash');
@@ -1366,6 +1423,9 @@ function Workspace({session, recovery, clearRecovery}) {
   const [showImport,   setShowImport]   = useState(false);
   const [showLogDeal,  setShowLogDeal]  = useState(false);
   const [showLogSpiff, setShowLogSpiff] = useState(false);
+  const [subscription, setSubscription] = useState(null);
+  const [showUpgrade,  setShowUpgrade]  = useState(false);
+  const [justUpgraded, setJustUpgraded] = useState(false);
   const planRef = useRef(plan);
   const goalsRef = useRef(goals);
   const settingsTimer = useRef(null);
@@ -1385,13 +1445,15 @@ function Workspace({session, recovery, clearRecovery}) {
 
   useEffect(()=>{ (async()=>{
     try {
-      const [p, d, s, st] = await Promise.all([
+      const [p, d, s, st, subq] = await Promise.all([
         sb.from('profiles').select('*').eq('id',uid).single(),
         sb.from('deals').select('*').order('date',{ascending:false}),
         sb.from('spiffs').select('*').order('date',{ascending:false}),
         sb.from('settings').select('*').eq('user_id',uid).maybeSingle(),
+        sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle(),
       ]);
       if (p.data) setProfile({ name: p.data.name || (session.user.email||'').split('@')[0], role: p.data.role });
+      if (subq.data) setSubscription(subq.data);
       setDeals((d.data||[]).map(rowToDeal));
       setSpiffs((s.data||[]).map(rowToSpiff));
       const cp = st.data && st.data.plan  && Object.keys(st.data.plan).length  ? {...DEFAULT_PLAN,  ...st.data.plan}  : null;
@@ -1460,15 +1522,58 @@ function Workspace({session, recovery, clearRecovery}) {
   };
   const signOut = () => sb.auth.signOut();
 
+  // Returning from Stripe checkout: show a welcome, then poll until the
+  // webhook has marked the account Pro (usually a few seconds).
+  useEffect(()=>{
+    const q = new URLSearchParams(window.location.search);
+    if (!q.get('checkout')) return;
+    const wasSuccess = q.get('checkout')==='success';
+    window.history.replaceState({}, '', window.location.pathname);
+    if (!wasSuccess) return;
+    setJustUpgraded(true);
+    let tries = 0;
+    const t = setInterval(async ()=>{
+      tries++;
+      const {data} = await sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle();
+      if (data && isProSub(data)) { setSubscription(data); clearInterval(t); }
+      else if (tries >= 15) clearInterval(t);
+    }, 2000);
+    return ()=>clearInterval(t);
+  }, [uid]);
+
   const stats = useMemo(()=>buildStats(deals,spiffs,plan,goals), [deals,spiffs,plan,goals]);
-  const actions = { onImport:()=>setShowImport(true), onLogDeal:()=>setShowLogDeal(true), onLogSpiff:()=>setShowLogSpiff(true) };
   const isAdmin = profile.role==='admin';
+  const hasPro = isAdmin || isProSub(subscription);
+  const atFreeLimit = !hasPro && stats.mtdDeals.length >= FREE_DEAL_LIMIT;
+  const gateDeal = (open) => () => { if (atFreeLimit) { setShowUpgrade(true); return; } open(true); };
+  const actions = { onImport:gateDeal(setShowImport), onLogDeal:gateDeal(setShowLogDeal), onLogSpiff:()=>setShowLogSpiff(true) };
 
   return (
     <div>
       <Sidebar view={view} setView={setView} name={profile.name} setName={saveName} mtdTotal={stats.mtdTotal} isAdmin={isAdmin} onSignOut={signOut} email={session.user.email} />
       <div id="main">
         <div className="container">
+          {justUpgraded && hasPro && (
+            <div className="card fu" style={{border:"1px solid var(--green-border)",background:"var(--green-bg)",padding:"14px 18px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{fontSize:13.5,color:"var(--green)",fontWeight:600}}>🎉 Welcome to EarnIQ Pro — unlimited deals unlocked.</div>
+              <button onClick={()=>setJustUpgraded(false)} style={{background:"none",border:"none",color:"var(--green)",cursor:"pointer",fontSize:13}}>✕</button>
+            </div>
+          )}
+          {justUpgraded && !hasPro && (
+            <div className="card fu" style={{border:"1px solid var(--border2)",padding:"14px 18px",marginBottom:18,fontSize:13.5,color:"var(--muted)"}}>
+              Payment received — activating your Pro account, this usually takes a few seconds…
+            </div>
+          )}
+          {!hasPro && loaded && stats.mtdDeals.length >= FREE_DEAL_LIMIT - 3 && (
+            <div className="card fu" style={{border:"1px solid var(--amber-border)",padding:"14px 18px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{fontSize:13.5,lineHeight:1.5}}>
+                {atFreeLimit
+                  ? <span><b style={{color:"var(--amber)"}}>You've used all {FREE_DEAL_LIMIT} free deals this month.</b> Upgrade to keep logging.</span>
+                  : <span><b style={{color:"var(--amber)"}}>{FREE_DEAL_LIMIT - stats.mtdDeals.length} free deal{FREE_DEAL_LIMIT - stats.mtdDeals.length!==1?'s':''} left this month.</b> Pro is unlimited.</span>}
+              </div>
+              <button onClick={()=>setShowUpgrade(true)} style={pillBtn('green')}>⚡ Upgrade to Pro</button>
+            </div>
+          )}
           {migrate && (
             <div className="card fu" style={{border:"1px solid var(--green-border)",padding:"16px 18px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:14,flexWrap:"wrap"}}>
               <div style={{fontSize:13.5,lineHeight:1.5}}>
@@ -1500,6 +1605,7 @@ function Workspace({session, recovery, clearRecovery}) {
       {showImport   && <ImportModal   onClose={()=>setShowImport(false)}   onSave={addDeal}   plan={plan} />}
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
+      {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} mtdCount={stats.mtdDeals.length} />}
       {recovery && <NewPasswordModal onDone={clearRecovery} />}
       {err && (
         <div onClick={()=>setErr(null)} style={{position:"fixed",bottom:18,right:18,zIndex:800,background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.35)",color:"var(--red)",borderRadius:12,padding:"13px 16px",fontSize:13,maxWidth:340,cursor:"pointer",backdropFilter:"blur(6px)"}}>
