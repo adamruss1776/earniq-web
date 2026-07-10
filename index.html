@@ -102,6 +102,7 @@ const LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJgAAACYCAYAAAAYwiAh
 
 // ── SUPABASE (cloud accounts + storage) ─────────────────────────────
 const SUPA_URL = "https://wwzliiwfikcfktowxvol.supabase.co";
+const OCR_SERVER = "https://earn-iq-sales.replit.app"; // same AI deal-sheet reader the iPhone app uses
 const SUPA_KEY = "sb_publishable_CC81vVE7B33QFkc45Jhf4A_x-L90Wh7";
 const sb = window.supabase ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : null;
 
@@ -467,6 +468,30 @@ function ImportModal({onClose, onSave, plan}) {
 
   const parse = async (file) => {
     setStage('parsing'); setError(null);
+    // 1) Try the AI reader — the same server the iPhone app uses.
+    //    Far more accurate than the in-browser fallback below.
+    try {
+      const b64 = await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=e=>res(String(e.target.result).split(',')[1]); fr.onerror=rej; fr.readAsDataURL(file); });
+      const mime = file.type || ((file.name||'').endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+      const resp = await fetch(OCR_SERVER + '/api/ocr', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ imageBase64: b64, mimeType: mime })
+      });
+      if (resp.ok) {
+        const r = await resp.json();
+        if ((r.fieldsFound||0) > 0) {
+          setDraft({
+            date: (r.dateCertain && r.date) ? r.date : new Date().toISOString().split('T')[0],
+            vehicle: r.vehicleName||'', stockNum: '', type: r.type==='used'?'used':'new',
+            front: r.frontGross||'', back: r.backGross||'',
+            split_pct: 100, split_with: '', notes: ''
+          });
+          setStage('review');
+          return;
+        }
+      }
+    } catch(e) { /* server unreachable — fall through to the local reader */ }
+    // 2) Fallback: read the file right here in the browser.
     try {
       let text = '';
       if (file.type==='application/pdf' || (file.name && file.name.endsWith('.pdf'))) {
