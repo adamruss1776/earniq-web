@@ -1353,10 +1353,10 @@ function AdminView() {
 
 // ── WORKSPACE (signed-in app) ────────────────────────────────────────
 // ── EARNIQ PRO (Stripe paywall) ──────────────────────────────────────
-const FREE_DEAL_LIMIT = 10; // free deals per calendar month
+const FREE_DEAL_LIMIT = 15; // lifetime free deals (total stored, never resets)
 const isProSub = (s) => !!s && ['active','trialing'].includes(s.status) && (!s.current_period_end || new Date(s.current_period_end) > new Date());
 
-function UpgradeModal({onClose, mtdCount}) {
+function UpgradeModal({onClose, dealCount}) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const go = async (plan) => {
@@ -1381,7 +1381,7 @@ function UpgradeModal({onClose, mtdCount}) {
   return (
     <Modal onClose={onClose} title="Upgrade to EarnIQ Pro" maxWidth={430}>
       <div style={{fontSize:13.5, color:"var(--muted)", lineHeight:1.6, marginBottom:18}}>
-        You've logged <b style={{color:"var(--text)"}}>{mtdCount} deals</b> this month — that's the free limit. Pro gives you <b style={{color:"var(--text)"}}>unlimited deals</b>, so you never lose track mid-month.
+        You've used all <b style={{color:"var(--text)"}}>{dealCount} free deals</b>. Pro gives you <b style={{color:"var(--text)"}}>unlimited deals</b>, so you never lose track mid-month.
       </div>
       <div style={{display:"flex", flexDirection:"column", gap:10}}>
         <button disabled={!!busy} onClick={()=>go('annual')} style={{...planBtn(busy==='annual'), border:"1px solid var(--green-border)", background:"var(--green-bg)"}}>
@@ -1544,7 +1544,7 @@ function Workspace({session, recovery, clearRecovery}) {
   const stats = useMemo(()=>buildStats(deals,spiffs,plan,goals), [deals,spiffs,plan,goals]);
   const isAdmin = profile.role==='admin';
   const hasPro = isAdmin || isProSub(subscription);
-  const atFreeLimit = !hasPro && stats.mtdDeals.length >= FREE_DEAL_LIMIT;
+  const atFreeLimit = !hasPro && deals.length >= FREE_DEAL_LIMIT;
   const gateDeal = (open) => () => { if (atFreeLimit) { setShowUpgrade(true); return; } open(true); };
   const actions = { onImport:gateDeal(setShowImport), onLogDeal:gateDeal(setShowLogDeal), onLogSpiff:()=>setShowLogSpiff(true) };
 
@@ -1564,12 +1564,12 @@ function Workspace({session, recovery, clearRecovery}) {
               Payment received — activating your Pro account, this usually takes a few seconds…
             </div>
           )}
-          {!hasPro && loaded && stats.mtdDeals.length >= FREE_DEAL_LIMIT - 3 && (
+          {!hasPro && loaded && deals.length >= FREE_DEAL_LIMIT - 5 && (
             <div className="card fu" style={{border:"1px solid var(--amber-border)",padding:"14px 18px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
               <div style={{fontSize:13.5,lineHeight:1.5}}>
                 {atFreeLimit
-                  ? <span><b style={{color:"var(--amber)"}}>You've used all {FREE_DEAL_LIMIT} free deals this month.</b> Upgrade to keep logging.</span>
-                  : <span><b style={{color:"var(--amber)"}}>{FREE_DEAL_LIMIT - stats.mtdDeals.length} free deal{FREE_DEAL_LIMIT - stats.mtdDeals.length!==1?'s':''} left this month.</b> Pro is unlimited.</span>}
+                  ? <span><b style={{color:"var(--amber)"}}>You've used all {FREE_DEAL_LIMIT} free deals.</b> Upgrade to keep logging.</span>
+                  : <span><b style={{color:"var(--amber)"}}>{FREE_DEAL_LIMIT - deals.length} free deal{FREE_DEAL_LIMIT - deals.length!==1?'s':''} left.</b> Pro is unlimited.</span>}
               </div>
               <button onClick={()=>setShowUpgrade(true)} style={pillBtn('green')}>⚡ Upgrade to Pro</button>
             </div>
@@ -1605,7 +1605,7 @@ function Workspace({session, recovery, clearRecovery}) {
       {showImport   && <ImportModal   onClose={()=>setShowImport(false)}   onSave={addDeal}   plan={plan} />}
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
-      {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} mtdCount={stats.mtdDeals.length} />}
+      {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} />}
       {recovery && <NewPasswordModal onDone={clearRecovery} />}
       {err && (
         <div onClick={()=>setErr(null)} style={{position:"fixed",bottom:18,right:18,zIndex:800,background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.35)",color:"var(--red)",borderRadius:12,padding:"13px 16px",fontSize:13,maxWidth:340,cursor:"pointer",backdropFilter:"blur(6px)"}}>
