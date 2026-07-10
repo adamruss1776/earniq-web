@@ -293,10 +293,15 @@ const buildStats = (deals, spiffs, plan, goals) => {
   const newUnits  = mtdDeals.filter(d=>d.type!=='used').length;
   const usedUnits = mtdDeals.filter(d=>d.type==='used').length;
 
+  // earnings per calendar month of the current year (for the Goals charts)
+  const ytdMonthly = Array(12).fill(0);
+  ytdDeals.forEach(d=>{ ytdMonthly[new Date(d.date+'T00:00:00').getMonth()] += calcMyComm(d,plan); });
+  ytdSpiffs.forEach(sp=>{ ytdMonthly[new Date(sp.date+'T00:00:00').getMonth()] += (Number(sp.amount)||0); });
+
   const projected = dayOfMonth>0 ? Math.round(mtdTotal/dayOfMonth*dim) : 0;
   const paceDelta = projected - goals.monthlyIncome;
 
-  return { m, y, yr, dim, dayOfMonth, mtdDeals, ytdDeals, mtdSpiffs, ytdSpiffs,
+  return { m, y, yr, dim, dayOfMonth, mtdDeals, ytdDeals, mtdSpiffs, ytdSpiffs, ytdMonthly,
            mtdDealPay, mtdSpiffPay, mtdTotal, ytdTotal, mtdFront, mtdBack, frontBackPct,
            avgDeal, best, streak, cumulative, months, newUnits, usedUnits, projected, paceDelta };
 };
@@ -388,11 +393,11 @@ function Modal({onClose, title, children, maxWidth=480}) {
 }
 
 // ── LOG DEAL MODAL ───────────────────────────────────────────────────
-function LogDealModal({onClose, onSave, plan, initial}) {
-  const [form, setForm] = useState(initial || emptyDeal());
+function LogDealModal({onClose, onSave, plan, initial, editing}) {
+  const [form, setForm] = useState(editing || initial || emptyDeal());
   const s = (k,v) => setForm(f=>({...f,[k]:v}));
   return (
-    <Modal onClose={onClose} title={initial?'Review Import':'Log Deal'}>
+    <Modal onClose={onClose} title={editing?'Edit Deal':initial?'Review Import':'Log Deal'}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
         <div>
           <label style={lbl}>Date</label>
@@ -445,8 +450,8 @@ function LogDealModal({onClose, onSave, plan, initial}) {
         <label style={lbl}>Notes</label>
         <input value={form.notes} onChange={e=>s('notes',e.target.value)} placeholder="Customer, deal number, notes…" style={inp} />
       </div>
-      <button onClick={()=>onSave({...form,id:Date.now()})} style={{...btn('green'),marginTop:20}}>
-        {initial?'Add to My Numbers':'Save Deal'}
+      <button onClick={()=>onSave(editing?{...form}:{...form,id:Date.now()})} style={{...btn('green'),marginTop:20}}>
+        {editing?'Save Changes':initial?'Add to My Numbers':'Save Deal'}
       </button>
     </Modal>
   );
@@ -826,7 +831,7 @@ function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpif
 }
 
 // ── DEALS VIEW ──────────────────────────────────────────────────────
-function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onImport, onLogDeal, onLogSpiff}) {
+function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal, onImport, onLogDeal, onLogSpiff}) {
   const isMobile = useIsMobile();
   const [filter, setFilter] = useState('mtd');
   const [q, setQ] = useState('');
@@ -897,7 +902,10 @@ function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onImport, 
                     </div>
                     <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
                       <div className="num" style={{fontSize:19,fontWeight:700,color:"var(--green)"}}>{fmt(mine)}</div>
-                      <button onClick={()=>onRemoveDeal(d.id)} style={{background:"none",border:"none",color:"var(--dim)",fontSize:14,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>✕</button>
+                      <div style={{display:"flex",gap:2}}>
+                        <button onClick={()=>onEditDeal(d)} title="Edit deal" style={{background:"none",border:"none",color:"var(--dim)",fontSize:14,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>✎</button>
+                        <button onClick={()=>onRemoveDeal(d.id)} title="Remove deal" style={{background:"none",border:"none",color:"var(--dim)",fontSize:14,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>✕</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -932,7 +940,8 @@ function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onImport, 
                         <td style={{padding:"13px 16px",textAlign:"right",color:"var(--muted)"}}>{split<100?split+'%'+(d.split_with?' w/ '+d.split_with:''):'—'}</td>
                         <td className="num" style={{padding:"13px 16px",textAlign:"right",fontWeight:700,color:"var(--green)",whiteSpace:"nowrap"}}>{fmt(mine)}</td>
                         <td style={{padding:"13px 10px",textAlign:"center"}}>
-                          <button onClick={()=>onRemoveDeal(d.id)} style={{background:"none",border:"none",color:"var(--dim)",fontSize:13,cursor:"pointer",padding:"2px 6px"}}>✕</button>
+                          <button onClick={()=>onEditDeal(d)} title="Edit deal" style={{background:"none",border:"none",color:"var(--dim)",fontSize:13,cursor:"pointer",padding:"2px 6px"}}>✎</button>
+                          <button onClick={()=>onRemoveDeal(d.id)} title="Remove deal" style={{background:"none",border:"none",color:"var(--dim)",fontSize:13,cursor:"pointer",padding:"2px 6px"}}>✕</button>
                         </td>
                       </tr>
                     );
@@ -983,6 +992,62 @@ function GoalsView({stats, goals, setGoals}) {
   const needed = Math.max(goals.monthlyIncome - S.mtdTotal, 0);
   const neededDeals = S.avgDeal>0 ? Math.ceil(needed/S.avgDeal) : null;
 
+  const yearRef = useChart(() => {
+    const nowM = new Date().getMonth();
+    let run = 0;
+    const cum = S.ytdMonthly.map((v,i)=>{ if (i>nowM) return null; run += v; return run; });
+    return {
+      type: 'line',
+      data: {
+        labels: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        datasets: [
+          {
+            label: 'Earned', data: cum, borderColor: '#f59e0b',
+            backgroundColor: (ctx) => { const g = ctx.chart.ctx.createLinearGradient(0,0,0,ctx.chart.height||230); g.addColorStop(0,'rgba(245,158,11,0.25)'); g.addColorStop(1,'rgba(245,158,11,0)'); return g; },
+            fill: true, tension: 0.35, borderWidth: 2.5,
+            pointRadius: (c)=> c.dataIndex===nowM ? 4 : 0, pointBackgroundColor: '#f59e0b',
+          },
+          {
+            label: 'Goal pace', data: Array.from({length:12},(_,i)=>Math.round(goals.yearlyIncome*(i+1)/12)),
+            borderColor: 'rgba(255,255,255,0.22)', borderDash: [5,5], borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0,
+          }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, interaction: {mode:'index', intersect:false},
+        plugins: {
+          legend: {display:false},
+          tooltip: { backgroundColor:'#181818', borderColor:'rgba(255,255,255,0.1)', borderWidth:1, titleColor:'#aaa', bodyColor:'#f0f0f0', padding:10,
+            callbacks: { label: (c)=> c.dataset.label+': '+fmt(c.parsed.y) } }
+        },
+        scales: { x: {grid:{display:false}}, y: {beginAtZero:true, ticks:{callback:(v)=>fmtK(v), maxTicksLimit:6}} }
+      }
+    };
+  }, [JSON.stringify(S.ytdMonthly), goals.yearlyIncome]);
+
+  const hitRef = useChart(() => ({
+    type: 'bar',
+    data: {
+      labels: S.months.map(mm=>mm.label),
+      datasets: [
+        { type:'line', label:'Goal', data: S.months.map(()=>goals.monthlyIncome),
+          borderColor:'rgba(255,255,255,0.25)', borderDash:[5,5], borderWidth:1.5, pointRadius:0 },
+        { label:'Earned', data: S.months.map(mm=>mm.total),
+          backgroundColor: S.months.map(mm=>mm.total>=goals.monthlyIncome?'#22c55e':'rgba(255,255,255,0.14)'),
+          borderRadius:7, borderSkipped:false, maxBarThickness:46 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: {display:false},
+        tooltip: { backgroundColor:'#181818', borderColor:'rgba(255,255,255,0.1)', borderWidth:1, titleColor:'#aaa', bodyColor:'#f0f0f0', padding:10,
+          callbacks: { label: (c)=> (c.dataset.label||'')+': '+fmt(c.parsed.y) } }
+      },
+      scales: { x: {grid:{display:false}}, y: {beginAtZero:true, ticks:{callback:(v)=>fmtK(v), maxTicksLimit:5}} }
+    }
+  }), [JSON.stringify(S.months), goals.monthlyIncome]);
+
   const GoalCard = ({label, field, value, pct, current, target, color, prefix='$'}) => (
     <div className="card" style={{padding:"22px 24px"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -1016,6 +1081,23 @@ function GoalsView({stats, goals, setGoals}) {
         <GoalCard label="Monthly Income" field="monthlyIncome" value={goals.monthlyIncome} pct={goalPct} current={fmt(S.mtdTotal)} target={fmt(goals.monthlyIncome)} color="var(--green)" />
         <GoalCard label="Monthly Units" field="monthlyUnits" value={goals.monthlyUnits} pct={unitPct} current={S.mtdDeals.length} target={goals.monthlyUnits+' units'} color="var(--blue)" prefix="" />
         <GoalCard label="Yearly Income" field="yearlyIncome" value={goals.yearlyIncome} pct={yearPct} current={fmt(S.ytdTotal)} target={fmt(goals.yearlyIncome)} color="var(--amber)" />
+      </div>
+
+      <div className="grid-2" style={{marginBottom:14}}>
+        <div className="card" style={{padding:"20px 22px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:6}}>
+            <span style={secLbl}>The Year So Far · {S.yr}</span>
+            <span style={{fontSize:11,color:"var(--dim)"}}>solid = earned · dashed = goal pace</span>
+          </div>
+          <div style={{height:230}}><canvas ref={yearRef} /></div>
+        </div>
+        <div className="card" style={{padding:"20px 22px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:6}}>
+            <span style={secLbl}>Months Won — Last 6</span>
+            <span style={{fontSize:11,color:"var(--dim)"}}>green = beat your goal</span>
+          </div>
+          <div style={{height:230}}><canvas ref={hitRef} /></div>
+        </div>
       </div>
 
       <div className="card" style={{padding:"22px 24px"}}>
@@ -1425,6 +1507,7 @@ function Workspace({session, recovery, clearRecovery}) {
   const [showLogSpiff, setShowLogSpiff] = useState(false);
   const [subscription, setSubscription] = useState(null);
   const [showUpgrade,  setShowUpgrade]  = useState(false);
+  const [editDeal,     setEditDeal]     = useState(null);
   const [justUpgraded, setJustUpgraded] = useState(false);
   const planRef = useRef(plan);
   const goalsRef = useRef(goals);
@@ -1501,6 +1584,12 @@ function Workspace({session, recovery, clearRecovery}) {
     const {data,error} = await sb.from('deals').insert(dealToRow(d,uid)).select().single();
     if (error) { oops('Could not save deal')(error); return; }
     setDeals(prev=>[rowToDeal(data),...prev]);
+  };
+  const updateDeal = async (d) => {
+    setEditDeal(null);
+    const {data,error} = await sb.from('deals').update(dealToRow(d,uid)).eq('id',d.id).select().single();
+    if (error) { oops('Could not update deal')(error); return; }
+    setDeals(prev=>prev.map(x=>x.id===d.id?rowToDeal(data):x).sort((a,b)=>new Date(b.date)-new Date(a.date)));
   };
   const removeDeal = async (id) => {
     if (!window.confirm('Remove this deal?')) return;
@@ -1593,7 +1682,7 @@ function Workspace({session, recovery, clearRecovery}) {
           ) : (
             <React.Fragment>
               {view==='dash'    && <DashboardView stats={stats} goals={goals} plan={plan} name={profile.name} {...actions} />}
-              {view==='deals'   && <DealsView deals={deals} spiffs={spiffs} plan={plan} onRemoveDeal={removeDeal} onRemoveSpiff={removeSpiff} {...actions} />}
+              {view==='deals'   && <DealsView deals={deals} spiffs={spiffs} plan={plan} onRemoveDeal={removeDeal} onRemoveSpiff={removeSpiff} onEditDeal={setEditDeal} {...actions} />}
               {view==='goals'   && <GoalsView stats={stats} goals={goals} setGoals={saveGoals} />}
               {view==='payplan' && <PayPlanView plan={plan} setPlan={savePlan} />}
               {view==='admin'   && isAdmin && <AdminView />}
@@ -1606,6 +1695,7 @@ function Workspace({session, recovery, clearRecovery}) {
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
       {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} />}
+      {editDeal     && <LogDealModal  onClose={()=>setEditDeal(null)} onSave={updateDeal} plan={plan} editing={editDeal} />}
       {recovery && <NewPasswordModal onDone={clearRecovery} />}
       {err && (
         <div onClick={()=>setErr(null)} style={{position:"fixed",bottom:18,right:18,zIndex:800,background:"var(--red-bg)",border:"1px solid rgba(239,68,68,0.35)",color:"var(--red)",borderRadius:12,padding:"13px 16px",fontSize:13,maxWidth:340,cursor:"pointer",backdropFilter:"blur(6px)"}}>
