@@ -1813,7 +1813,7 @@ function Workspace({session, recovery, clearRecovery}) {
       if (!resp.ok || body.error) { alert('Could not delete account: '+(body.error||'unknown error')); return; }
       await sb.auth.signOut();
       alert('Your account and all data have been permanently deleted.');
-    } catch(e) { alert('Something went wrong. Please contact adam@earniq.app for help.'); }
+    } catch(e) { alert('Something went wrong. Please contact support@earniq.app for help.'); }
   };
 
   // Returning from Stripe checkout: show a welcome, then poll until the
