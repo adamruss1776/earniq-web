@@ -1394,7 +1394,7 @@ const NAV_ITEMS = [
   {key:'payplan', label:'Pay Plan',  icon:'plan'},
 ];
 
-function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, email}) {
+function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, onDeleteAccount, email}) {
   const editName = () => {
     const n = window.prompt('Your name (shown on the dashboard):', name);
     if (n && n.trim()) setName(n.trim());
@@ -1434,6 +1434,10 @@ function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, em
         <div className="navlink" onClick={onSignOut} style={{marginTop:2}} title={email||''}>
           <Icon d={ICONS.out} size={15} />
           Sign out
+        </div>
+        <div className="navlink" onClick={onDeleteAccount} style={{marginTop:2,color:"#f87171"}} title="Permanently delete your account">
+          <Icon d={ICONS.trash||"M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"} size={15} />
+          Delete account
         </div>
       </div>
     </div>
@@ -1796,6 +1800,21 @@ function Workspace({session, recovery, clearRecovery}) {
     setSpiffs(prev=>prev.filter(s=>s.id!==id));
   };
   const signOut = () => sb.auth.signOut();
+  const deleteAccount = async () => {
+    if (!window.confirm('Are you sure you want to delete your account?\n\nThis will permanently remove all your deals, spiffs, settings, and washout data. This cannot be undone.')) return;
+    if (!window.confirm('This is your last chance. Delete everything permanently?')) return;
+    try {
+      const {data:{session:s}} = await sb.auth.getSession();
+      if (!s) { alert('You need to be signed in to delete your account.'); return; }
+      const resp = await fetch(SUPA_URL+'/functions/v1/delete-account', {
+        method:'POST', headers:{'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'}
+      });
+      const body = await resp.json();
+      if (!resp.ok || body.error) { alert('Could not delete account: '+(body.error||'unknown error')); return; }
+      await sb.auth.signOut();
+      alert('Your account and all data have been permanently deleted.');
+    } catch(e) { alert('Something went wrong. Please contact adam@earniq.app for help.'); }
+  };
 
   // Returning from Stripe checkout: show a welcome, then poll until the
   // webhook has marked the account Pro (usually a few seconds).
@@ -1825,7 +1844,7 @@ function Workspace({session, recovery, clearRecovery}) {
 
   return (
     <div>
-      <Sidebar view={view} setView={setView} name={profile.name} setName={saveName} mtdTotal={stats.mtdTotal} isAdmin={isAdmin} onSignOut={signOut} email={session.user.email} />
+      <Sidebar view={view} setView={setView} name={profile.name} setName={saveName} mtdTotal={stats.mtdTotal} isAdmin={isAdmin} onSignOut={signOut} onDeleteAccount={deleteAccount} email={session.user.email} />
       <div id="main">
         <div className="container">
           {justUpgraded && hasPro && (

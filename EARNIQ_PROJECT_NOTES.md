@@ -1,4 +1,4 @@
-# EarnIQ — Project Notes (updated July 10, 2026)
+# EarnIQ — Project Notes (updated July 21, 2026)
 
 ## What EarnIQ is
 Commission tracker for car salespeople. Built by Adam Russell.
@@ -24,6 +24,14 @@ Commission tracker for car salespeople. Built by Adam Russell.
 - ✅ Admin accounts bypass the paywall by design.
 - 🔶 Landing page (Desktop/earniq-site): "Use EarnIQ on the Web" button + honest privacy wording DONE locally but NOT uploaded to Cloudflare yet.
 
+## July 15: Apple rejection + resubmission
+- Build 34 REJECTED: (1) 3.1.2c missing Terms of Use link in metadata, (2) 2.1b paywall loaded indefinitely on purchase.
+- Root cause of #2: race condition in lib/revenuecat.tsx — queries fired before RevenueCat configure(), cached null, never refetched. FIXED (queries now gated on init, retry + "Retry" button in PaywallModal instead of infinite spinner). Also: subscription review screenshots were missing in App Store Connect (now uploaded, resized to 1290x2796 — iPhone screenshots come out 1320-wide which Apple rejects).
+- IMPORTANT: the Mac mini IS the iOS build machine — EarnIQ-Sales folder here has the current code even though git log looks old (builds aren't always committed). Replit copy is stale (stopped at build 31).
+- ✅ Build 36 submitted July 15 with all fixes. Terms link added to description, subs attached to version, display names now "EarnIQ Pro Monthly/Annual".
+- Paywall confirmed WORKING in TestFlight build 36.
+- Rejection #2 (July 15): 3.1.2c again but narrower — needed Terms + Privacy links INSIDE the app on the paywall. Added both links to PaywallModal (open earniq.app/terms and /privacy), built + RESUBMITTED (build 37) with screen-recording proof attached in Resolution Center. 2.1b purchase bug did NOT recur — fix held. 🤞
+
 ## July 10 session (Mac mini) — web app features
 - ✅ Deal editing: pencil (✎) on every deal row opens the deal for changes.
 - ✅ Goals page charts: "The Year So Far" (cumulative earnings vs goal pace) + "Months Won" (green bar = beat monthly goal).
@@ -33,6 +41,9 @@ Commission tracker for car salespeople. Built by Adam Russell.
 - 🔶 WASHOUT PHASE 2 (not started, the killer feature): AI reads the manager's sheet and cross-references against logged deals → discrepancy report (missing deals, gross mismatches, dollar delta). DECIDED: binder storage is free, AI Compare is Pro. Needs: washout-extraction endpoint on the Replit api-server + compare UI.
 - NOTE: Adam sells luxury/exotics — the Lamborghini/Rolls-Royce deals in his account are REAL deals, do not treat as test data.
 - Adam's real usage begins now: admin account = adamrussell8@yahoo.com (unlimited). Test account: adam@pinnaclecrm.ai.
+- ✅ Landing page (with official App Store badge + web button + honest copy) uploaded to Cloudflare and confirmed live.
+- ✅ Privacy policy + Terms rewritten July 10 to cover the web app (accounts, cloud storage, Stripe). 🔶 NEEDS: re-upload earniq-site to Cloudflare + "Purge Everything" in Caching so old cached pages clear worldwide.
+- Adam is now dogfooding: entering his real deals daily in the admin account to verify tracking. Expect bug reports.
 
 ## Gotcha we hit twice tonight
 Stale `.git/index.lock` file blocks git on BOTH computers. Fix:
@@ -49,6 +60,39 @@ Stale `.git/index.lock` file blocks git on BOTH computers. Fix:
 - Landing page "Use EarnIQ on the Web" button — added in Replit, but Cloudflare still serves the OLD version. Needs: fresh build downloaded from Replit → re-uploaded to Cloudflare.
 - Consider moving landing page deploys to GitHub → Cloudflare so updates are one push
 - From older handoff: Zoho SPF record in Cloudflare, swap App Store link on earniq.app when Apple approves, verify earniq.app/terms loads (looked possibly broken on July 9), marketing push per EarnIQ-Launch-Plan.md
+
+## July 21: iPhone app login system + app name fix
+
+### App name fix
+- "(d62481)" suffix in the App Store name comes from Replit's auto-naming. To change it, Apple requires a new version.
+- Bumped app.json: version 1.0.0 → 1.0.1, buildNumber 37 → 38.
+- Adam needs to: go to App Store Connect → App Information → change Name from "EarnIQ (d62481)" to "EarnIQ" → create a new version (1.0.1) → submit.
+
+### iPhone app login/account system (code complete, needs build + test)
+Files changed:
+- **NEW: lib/supabase.ts** — Supabase client for React Native, same project as web app (wwzliiwfikcfktowxvol). Uses JWT anon key + AsyncStorage for session persistence.
+- **NEW: context/AuthContext.tsx** — provides user/session/isGuest to the app. Listens for Supabase auth state changes.
+- **components/LoginScreen.tsx** — complete rewrite: real Sign In + Sign Up + Forgot Password via Supabase auth. Still has "Continue without account" guest mode. Fixed footer links from earniq.replit.app → earniq.app. Added Terms link alongside Privacy link.
+- **context/DataContext.tsx** — dual-mode: when logged in, reads/writes deals+spiffs+settings to Supabase (same tables as web app); when guest, uses AsyncStorage (local). Washouts stay local-only (web and mobile use different washout schemas). Maps between iPhone field names (vehicleName, frontGross, etc.) and DB column names (vehicle, front, etc.).
+- **app/_layout.tsx** — tracks isGuest vs logged-in state. Wraps everything in AuthProvider. LoginScreen.onComplete now passes userId for account logins.
+- **lib/logout.ts** — now also calls supabase.auth.signOut() and clears GUEST_MODE_KEY.
+- **app/settings.tsx** — shows user email when logged in, shows "Guest (no account)" otherwise. Fixed legal URLs from earniq.replit.app → earniq.app. Support email: adam@earniq.app.
+- **package.json** — added @supabase/supabase-js and react-native-url-polyfill.
+
+### Privacy + Terms updated
+- earniq-site/privacy.html — rewrote to reflect that BOTH the iPhone app and web app now offer optional accounts. Guest mode (local-only) still available. Updated date to July 21.
+- earniq-site/terms.html — updated Accounts section to cover iPhone app accounts. Updated date to July 21.
+- NEEDS: re-upload earniq-site folder to Cloudflare + Purge Everything.
+
+### Database trigger confirmed
+- `handle_new_user` trigger on auth.users auto-creates profiles + settings rows on signup. Adam's emails get role='admin'.
+
+### What's next
+1. Adam: run `npm install` (or `pnpm install`) in EarnIQ-Sales/artifacts/earniq to get new packages
+2. Adam: `eas build --platform ios --profile production` then `eas submit`
+3. Adam: in App Store Connect, create version 1.0.1, change Name to "EarnIQ", submit
+4. Adam: re-upload earniq-site to Cloudflare + Purge Everything for updated legal pages
+5. Test: sign up on iPhone app, verify deals sync between phone and myearniq.com
 
 ## To start the next session
 Open Claude (Cowork), connect the Desktop folder, and say:
