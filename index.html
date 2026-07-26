@@ -1626,9 +1626,9 @@ function AdminView() {
 // ── WORKSPACE (signed-in app) ────────────────────────────────────────
 // ── EARNIQ PRO (Stripe paywall) ──────────────────────────────────────
 const FREE_DEAL_LIMIT = 15; // lifetime free deals (total stored, never resets)
-const isProSub = (s) => !!s && ['active','trialing'].includes(s.status) && (!s.current_period_end || new Date(s.current_period_end) > new Date());
+const isProSub = (s) => !!s && ['active','trialing','founder'].includes(s.status) && (s.status === 'founder' || !s.current_period_end || new Date(s.current_period_end) > new Date());
 
-function UpgradeModal({onClose, dealCount}) {
+function UpgradeModal({onClose, dealCount, onFounderCode}) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const go = async (plan) => {
@@ -1677,6 +1677,55 @@ function UpgradeModal({onClose, dealCount}) {
       <div style={{fontSize:11, color:"var(--dim)", textAlign:"center", marginTop:16, lineHeight:1.6}}>
         Secure payment by Stripe. Your card details never touch our servers.
       </div>
+      {onFounderCode && (
+        <div style={{textAlign:"center",marginTop:12}}>
+          <span onClick={onFounderCode} style={{fontSize:12,color:"var(--green)",cursor:"pointer",textDecoration:"underline"}}>Have a founder code?</span>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function FounderCodeModal({onClose, onSuccess}) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg,  setMsg]  = useState(null);
+  const [ok,   setOk]   = useState(false);
+  const redeem = async () => {
+    if (!code.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const {data, error} = await sb.rpc('redeem_founder_code', {p_code: code.trim()});
+      if (error) throw error;
+      if (data && data.ok) { setOk(true); setMsg(data.message || 'Code accepted!'); if (onSuccess) onSuccess(); }
+      else { setMsg(data?.error || 'Code not recognized.'); }
+    } catch(e) { setMsg('Error: ' + (e.message || 'Something went wrong')); }
+    setBusy(false);
+  };
+  return (
+    <Modal onClose={onClose} title="Redeem Founder Code" maxWidth={400}>
+      {ok ? (
+        <div style={{textAlign:"center",padding:"18px 0"}}>
+          <div style={{fontSize:36,marginBottom:10}}>🎉</div>
+          <div style={{fontSize:15,fontWeight:600,color:"var(--green)",marginBottom:8}}>{msg}</div>
+          <div style={{fontSize:13,color:"var(--muted)",marginBottom:18}}>You now have full, unlimited access to EarnIQ.</div>
+          <button onClick={onClose} style={{padding:"10px 28px",borderRadius:10,background:"var(--green)",color:"#000",fontWeight:700,border:"none",cursor:"pointer",fontSize:13}}>Let's Go</button>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontSize:13.5,color:"var(--muted)",lineHeight:1.6,marginBottom:16}}>
+            Enter your founder code to unlock full access to EarnIQ — no payment required.
+          </div>
+          <input type="text" value={code} onChange={e=>setCode(e.target.value)} onKeyDown={e=>e.key==='Enter'&&redeem()}
+            placeholder="e.g. FOUNDER-001" autoFocus
+            style={{width:"100%",padding:"12px 14px",borderRadius:10,border:"1px solid var(--border2)",background:"var(--surface)",color:"var(--text)",fontSize:14,boxSizing:"border-box",letterSpacing:"0.05em",textTransform:"uppercase"}} />
+          {msg && <div style={{marginTop:10,fontSize:12.5,color:"var(--red)",lineHeight:1.5}}>{msg}</div>}
+          <button disabled={busy||!code.trim()} onClick={redeem}
+            style={{width:"100%",marginTop:14,padding:"12px",borderRadius:10,background:"var(--green)",color:"#000",fontWeight:700,border:"none",cursor:"pointer",fontSize:14,opacity:busy||!code.trim()?0.5:1}}>
+            {busy ? 'Checking…' : 'Redeem Code'}
+          </button>
+        </div>
+      )}
     </Modal>
   );
 }
@@ -1697,6 +1746,7 @@ function Workspace({session, recovery, clearRecovery}) {
   const [showLogSpiff, setShowLogSpiff] = useState(false);
   const [subscription, setSubscription] = useState(null);
   const [showUpgrade,  setShowUpgrade]  = useState(false);
+  const [showFounder,  setShowFounder]  = useState(false);
   const [editDeal,     setEditDeal]     = useState(null);
   const [justUpgraded, setJustUpgraded] = useState(false);
   const planRef = useRef(plan);
@@ -1865,7 +1915,10 @@ function Workspace({session, recovery, clearRecovery}) {
                   ? <span><b style={{color:"var(--amber)"}}>You've used all {FREE_DEAL_LIMIT} free deals.</b> Upgrade to keep logging.</span>
                   : <span><b style={{color:"var(--amber)"}}>{FREE_DEAL_LIMIT - deals.length} free deal{FREE_DEAL_LIMIT - deals.length!==1?'s':''} left.</b> Pro is unlimited.</span>}
               </div>
-              <button onClick={()=>setShowUpgrade(true)} style={pillBtn('green')}>⚡ Upgrade to Pro</button>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <button onClick={()=>setShowFounder(true)} style={{...pillBtn(),fontSize:12}}>🎟 Founder Code</button>
+                <button onClick={()=>setShowUpgrade(true)} style={pillBtn('green')}>⚡ Upgrade to Pro</button>
+              </div>
             </div>
           )}
           {migrate && (
@@ -1900,7 +1953,11 @@ function Workspace({session, recovery, clearRecovery}) {
       {showImport   && <ImportModal   onClose={()=>setShowImport(false)}   onSave={addDeal}   plan={plan} />}
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
-      {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} />}
+      {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} onFounderCode={()=>{setShowUpgrade(false);setShowFounder(true);}} />}
+      {showFounder  && <FounderCodeModal onClose={()=>setShowFounder(false)} onSuccess={()=>{
+        sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle().then(({data})=>{ if(data) setSubscription(data); });
+        setShowFounder(false); setJustUpgraded(true);
+      }} />}
       {editDeal     && <LogDealModal  onClose={()=>setEditDeal(null)} onSave={updateDeal} plan={plan} editing={editDeal} />}
       {recovery && <NewPasswordModal onDone={clearRecovery} />}
       {err && (
