@@ -1814,19 +1814,164 @@ function DealReviewCard({dealId, onClose}) {
   );
 }
 
+const COACH_CATS = [
+  {key:'mine',  icon:'📊', label:'My Numbers',      blurb:'Straight talk about your own data'},
+  {key:'gross', icon:'💰', label:'Holding Gross',   blurb:'Defend your number, stop discounting'},
+  {key:'obj',   icon:'🤝', label:'Objections',      blurb:'What to say when they push back'},
+  {key:'trade', icon:'🚗', label:'Trade-Ins & F&I', blurb:'Low trades, upside down, the box'},
+];
+
+async function callCoachAsk(payload) {
+  const {data:{session}} = await sb.auth.getSession();
+  if (!session) return {error:'Not signed in.'};
+  const res = await fetch(SUPA_URL+'/functions/v1/coach-ask', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPA_KEY},
+    body: JSON.stringify(payload)
+  });
+  const body = await res.json().catch(()=>({}));
+  if (!res.ok || body.error) return {error: body.message || body.error || 'Coach unavailable.', code: body.error};
+  return body;
+}
+
+function AskCoach() {
+  const [catalog, setCatalog] = useState(null);
+  const [cat, setCat]         = useState(null);
+  const [answer, setAnswer]   = useState(null);   // {loading}|{error}|{headline,body,question}
+  const [freeText, setFreeText] = useState('');
+  const [asking, setAsking]   = useState(false);
+
+  useEffect(()=>{ (async()=>{
+    const r = await callCoachAsk({kind:'catalog'});
+    setCatalog(r.catalog || []);
+  })(); }, []);
+
+  const ask = async (payload, label) => {
+    setAsking(true);
+    setAnswer({loading:true, question:label});
+    const r = await callCoachAsk(payload);
+    setAnswer({loading:false, question:label, ...r});
+    setAsking(false);
+  };
+
+  const askPreset = (q) => ask({question_id:q.id}, q.label);
+  const askFree = () => {
+    const t = freeText.trim();
+    if (!t || asking) return;
+    setFreeText('');
+    ask({text:t}, t);
+  };
+
+  // ── answer view ──
+  if (answer) {
+    return (
+      <div className="fu">
+        <div onClick={()=>setAnswer(null)} style={{fontSize:12.5,color:"var(--muted)",cursor:"pointer",marginBottom:16,display:"inline-flex",alignItems:"center",gap:6}}>
+          ← Back to topics
+        </div>
+        <div className="card" style={{padding:"22px 24px"}}>
+          <div style={{fontSize:13.5,fontWeight:600,marginBottom:16,paddingBottom:14,borderBottom:"1px solid var(--border)",lineHeight:1.5}}>
+            {answer.question}
+          </div>
+          {answer.loading ? (
+            <div style={{display:"flex",alignItems:"center",gap:12,padding:"14px 0"}}>
+              <div style={{width:18,height:18,border:"2px solid var(--surface3)",borderTopColor:"var(--green)",borderRadius:"50%",animation:"spin 0.8s linear infinite"}} />
+              <div style={{fontSize:13.5,color:"var(--muted)"}}>Coach is thinking…</div>
+            </div>
+          ) : answer.error ? (
+            <div style={{fontSize:13.5,color:answer.code==='RATE_LIMIT'?"var(--amber)":"var(--red)",lineHeight:1.6}}>{answer.error}</div>
+          ) : (
+            <CoachBlocks headline={answer.headline} body={answer.body} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── question list for a category ──
+  if (cat) {
+    const qs = (catalog||[]).filter(q=>q.cat===cat.key);
+    return (
+      <div className="fu">
+        <div onClick={()=>setCat(null)} style={{fontSize:12.5,color:"var(--muted)",cursor:"pointer",marginBottom:16,display:"inline-flex",alignItems:"center",gap:6}}>
+          ← All topics
+        </div>
+        <div style={{fontSize:17,fontWeight:700,marginBottom:4}}>{cat.icon} {cat.label}</div>
+        <div style={{fontSize:13,color:"var(--muted)",marginBottom:18}}>{cat.blurb}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:9}}>
+          {qs.map(q=>(
+            <button key={q.id} onClick={()=>askPreset(q)}
+              style={{width:"100%",textAlign:"left",padding:"15px 17px",borderRadius:12,cursor:"pointer",
+                background:"var(--surface)",border:"1px solid var(--border2)",color:"var(--text)",
+                fontSize:14,fontWeight:500,lineHeight:1.5,transition:"0.12s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--green-border)";e.currentTarget.style.background="var(--green-bg)";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border2)";e.currentTarget.style.background="var(--surface)";}}>
+              {q.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── category grid ──
+  return (
+    <div className="fu">
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:12,marginBottom:20}}>
+        {COACH_CATS.map(c=>(
+          <div key={c.key} onClick={()=>setCat(c)} className="card"
+            style={{padding:"20px 20px",cursor:"pointer",transition:"0.12s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--green-border)";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="";}}>
+            <div style={{fontSize:24,marginBottom:10}}>{c.icon}</div>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>{c.label}</div>
+            <div style={{fontSize:12.5,color:"var(--muted)",lineHeight:1.5}}>{c.blurb}</div>
+          </div>
+        ))}
+      </div>
+      <div className="card" style={{padding:"18px 20px"}}>
+        <div style={{fontSize:13,fontWeight:600,marginBottom:10}}>✍️ Something else</div>
+        <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
+          <input value={freeText} onChange={e=>setFreeText(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter')askFree();}}
+            placeholder="Ask the coach anything…"
+            style={{...inp,flex:1,minWidth:200}} />
+          <button onClick={askFree} disabled={!freeText.trim()||asking}
+            style={{...pillBtn('green'),padding:"11px 20px",opacity:(!freeText.trim()||asking)?0.5:1}}>Ask</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CoachView({hasPro, onUpgrade, dealCount}) {
+  const [tab, setTab] = useState('ask');
   const [state, setState] = useState({loading:true});
   const load = async () => {
     setState({loading:true});
     const r = await callCoach({kind:'weekly_report'});
     setState({loading:false, ...r});
   };
-  useEffect(()=>{ if (hasPro) load(); else setState({loading:false}); }, [hasPro]);
+  useEffect(()=>{ if (hasPro && tab==='report') load(); }, [hasPro, tab]);
 
   const Title = () => (
     <div style={{marginBottom:24}}>
       <div style={{fontSize:25,fontWeight:700,letterSpacing:"-0.02em",marginBottom:6}}>Coach</div>
       <div style={{fontSize:13,color:"var(--muted)"}}>Your numbers, read back to you by someone who's been on the floor.</div>
+    </div>
+  );
+
+  const Tabs = () => (
+    <div style={{display:"flex",gap:8,marginBottom:22}}>
+      {[['ask','Ask the Coach'],['report','Report Card']].map(([k,l])=>(
+        <button key={k} onClick={()=>setTab(k)}
+          style={{padding:"9px 16px",borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:tab===k?600:400,
+            background: tab===k?"var(--green-bg)":"var(--surface2)",
+            border:`1px solid ${tab===k?"var(--green-border)":"var(--border2)"}`,
+            color: tab===k?"var(--green)":"var(--muted)"}}>
+          {l}
+        </button>
+      ))}
     </div>
   );
 
@@ -1836,17 +1981,27 @@ function CoachView({hasPro, onUpgrade, dealCount}) {
       <div className="card" style={{padding:"32px 26px",textAlign:"center"}}>
         <div style={{fontSize:34,marginBottom:12}}>⚡</div>
         <div style={{fontSize:17,fontWeight:700,marginBottom:8}}>Coach is an EarnIQ Pro feature</div>
-        <div style={{fontSize:13.5,color:"var(--muted)",lineHeight:1.6,maxWidth:400,margin:"0 auto 20px"}}>
-          Get a read on every deal you log and a report card every week — built from your own numbers, not generic advice.
+        <div style={{fontSize:13.5,color:"var(--muted)",lineHeight:1.6,maxWidth:420,margin:"0 auto 20px"}}>
+          A read on every deal you log, a report card every week, and straight answers on holding gross,
+          objections, and trades — built from your own numbers, not generic advice.
         </div>
         <button onClick={onUpgrade} style={{...pillBtn('green'),padding:"11px 20px"}}>See Pro</button>
       </div>
     </div>
   );
 
+  if (tab === 'ask') return (
+    <div>
+      <Title />
+      <Tabs />
+      <AskCoach />
+    </div>
+  );
+
   if (state.loading) return (
     <div>
       <Title />
+      <Tabs />
       <div style={{textAlign:"center",padding:"80px 0"}}>
         <div style={{width:38,height:38,border:"3px solid var(--surface3)",borderTopColor:"var(--green)",borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 14px"}} />
         <div style={{fontSize:13,color:"var(--muted)"}}>Reading your week…</div>
@@ -1860,6 +2015,7 @@ function CoachView({hasPro, onUpgrade, dealCount}) {
     return (
       <div>
         <Title />
+        <Tabs />
         <div className="card" style={{padding:"30px 26px",textAlign:"center"}}>
           <div style={{fontSize:30,marginBottom:12}}>{noData ? '📋' : notReady ? '🔌' : '⚠️'}</div>
           <div style={{fontSize:15,fontWeight:600,marginBottom:8}}>
@@ -1877,6 +2033,7 @@ function CoachView({hasPro, onUpgrade, dealCount}) {
   return (
     <div>
       <Title />
+      <Tabs />
       <div className="card" style={{padding:"22px 24px"}}>
         <div style={{fontSize:10.5,color:"var(--green)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:16}}>
           Report card · week of {state.period_start}
