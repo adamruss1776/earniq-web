@@ -1394,7 +1394,7 @@ const NAV_ITEMS = [
   {key:'payplan', label:'Pay Plan',  icon:'plan'},
 ];
 
-function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, onDeleteAccount, email}) {
+function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, onDeleteAccount, onFounderCode, hasPro, email}) {
   const editName = () => {
     const n = window.prompt('Your name (shown on the dashboard):', name);
     if (n && n.trim()) setName(n.trim());
@@ -1431,6 +1431,12 @@ function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, on
             <div style={{fontSize:10,color:"var(--dim)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{isAdmin?'Admin':'Sales Professional'}</div>
           </div>
         </div>
+        {!hasPro && onFounderCode && (
+          <div className="navlink" onClick={onFounderCode} style={{marginTop:2,color:"var(--green)"}} title="Redeem a founder code">
+            <Icon d={ICONS.bolt} size={15} />
+            Founder Code
+          </div>
+        )}
         <div className="navlink" onClick={onSignOut} style={{marginTop:2}} title={email||''}>
           <Icon d={ICONS.out} size={15} />
           Sign out
@@ -1465,6 +1471,7 @@ function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [founderCode, setFounderCode] = useState('');
   const [msg, setMsg] = useState(null);   // {type:'error'|'ok', text}
   const [busy, setBusy] = useState(false);
 
@@ -1481,7 +1488,13 @@ function AuthScreen() {
         if (password.length < 6) { setMsg({type:'error',text:'Password needs at least 6 characters.'}); setBusy(false); return; }
         const {data, error} = await sb.auth.signUp({email:email.trim(), password, options:{data:{name:name.trim()}}});
         if (error) setMsg({type:'error',text:error.message});
-        else if (!data.session) setMsg({type:'ok',text:'Almost done — check your email and click the confirmation link, then sign in.'});
+        else {
+          // Hold the code until a session exists — signup may need email confirmation first.
+          if (founderCode.trim()) {
+            try { ls.setItem('earniq_pending_founder_code', founderCode.trim().toUpperCase()); } catch(e){}
+          }
+          if (!data.session) setMsg({type:'ok',text:'Almost done — check your email and click the confirmation link, then sign in.'});
+        }
       } else {
         const {error} = await sb.auth.resetPasswordForEmail(email.trim(), {redirectTo: window.location.origin});
         setMsg(error ? {type:'error',text:error.message} : {type:'ok',text:'Reset link sent — check your email.'});
@@ -1521,6 +1534,14 @@ function AuthScreen() {
               <div><label style={lbl}>Password</label>
                 <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" style={inp}
                   onKeyDown={e=>{if(e.key==='Enter')submit();}} /></div>
+            )}
+            {mode==='signup' && (
+              <div>
+                <label style={lbl}>Founder Code <span style={{textTransform:"none",letterSpacing:0,color:"var(--dim)"}}>— optional</span></label>
+                <input value={founderCode} onChange={e=>setFounderCode(e.target.value)} placeholder="FOUNDER-001"
+                  style={{...inp,textTransform:"uppercase",letterSpacing:"0.05em"}} onKeyDown={e=>{if(e.key==='Enter')submit();}} />
+                <div style={{fontSize:11,color:"var(--dim)",marginTop:6}}>Have a code? Enter it here to unlock full access.</div>
+              </div>
             )}
           </div>
           {msg && (
@@ -1730,6 +1751,197 @@ function FounderCodeModal({onClose, onSuccess}) {
   );
 }
 
+// ── ONBOARDING QUESTIONNAIRE ─────────────────────────────────────────
+const ONBOARD_Q = [
+  {
+    key:'tracking_method',
+    q:"How are you tracking your deals right now?",
+    sub:"No wrong answer — most people are winging it.",
+    opts:[
+      ['crm_eleads','Company CRM (eLeads)'],
+      ['crm_vinsolutions','Company CRM (VinSolutions)'],
+      ['crm_other','Another company CRM'],
+      ['sheets','Google Docs / spreadsheet'],
+      ['paper','Good ol’ fashioned pen and paper'],
+      ['memory','Honestly? My memory'],
+    ]
+  },
+  {
+    key:'volume',
+    q:"How many cars do you average a month?",
+    sub:"Ballpark is fine.",
+    opts:[
+      ['1-10','1–10'],
+      ['11-20','11–20'],
+      ['21-30','21–30'],
+      ['30+','30+'],
+      ['rockstar','I’m a rockstar and lose count'],
+    ]
+  },
+  {
+    key:'recaps',
+    q:"Is management consistent about giving you deal recaps?",
+    sub:"Be honest — this one matters.",
+    opts:[
+      ['yes','Yes, every month like clockwork'],
+      ['sometimes','Sometimes, if I chase them down'],
+      ['no','No'],
+      ['what','What the heck is a deal recap???'],
+    ]
+  },
+  {
+    key:'open_to_better',
+    q:"If there were a better way to track your numbers — would you use it?",
+    sub:"Last one.",
+    opts:[
+      ['yes','Yes, show me'],
+      ['maybe','Maybe, if it’s actually easy'],
+      ['no','I’m good. If it ain’t broke, don’t fix it.'],
+    ]
+  },
+];
+
+// Turns their four answers into a mirror they can't argue with.
+function buildMirror(a) {
+  const out = [];
+  const method = a.tracking_method;
+  const perMonth = a.volume==='1-10' ? 5 : a.volume==='11-20' ? 15 : a.volume==='21-30' ? 25 : 35;
+  const perYear  = perMonth * 12;
+
+  if (method==='paper' || method==='memory') {
+    out.push({
+      icon:'📝',
+      title: method==='memory' ? 'You’re tracking from memory' : 'You’re tracking on paper',
+      body:`At about ${perMonth} cars a month, that’s roughly ${perYear} deals a year living in your head or a notebook. Every one of them is a number nobody else is double-checking.`
+    });
+  } else if (method==='sheets') {
+    out.push({
+      icon:'📊',
+      title:'A spreadsheet is a start — but it’s not a system',
+      body:`You’re hand-entering roughly ${perYear} deals a year into something you maintain on the showroom floor, between ups. It works right up until the month you get busy.`
+    });
+  } else {
+    out.push({
+      icon:'🏢',
+      title:'Your CRM works for the store, not for you',
+      body:'Company CRMs track the customer and the unit — not your commission. They show what the store made. They don’t show what you’re owed.'
+    });
+  }
+
+  if (a.recaps==='no' || a.recaps==='what' || a.recaps==='sometimes') {
+    out.push({
+      icon:'⚠️',
+      title: a.recaps==='what' ? 'You’ve never seen a deal recap' : 'You’re not getting consistent recaps',
+      body:`Across ~${perYear} deals a year, you have no independent record to check the office against. If a gross gets miscounted or a spiff goes missing, nothing catches it. That’s your money.`
+    });
+  } else {
+    out.push({
+      icon:'✅',
+      title:'You get recaps — now verify them',
+      body:'A recap is only half of it. Without your own numbers to compare against, it just tells you what you got paid — not what you earned.'
+    });
+  }
+
+  out.push({
+    icon:'🎯',
+    title:'Here’s what changes today',
+    body:'EarnIQ does the commission math the second you log a deal, tracks your month against your goal in real time, and gives you a record to hold up at washout. About 30 seconds a deal.'
+  });
+
+  return out;
+}
+
+function OnboardingFlow({uid, onDone}) {
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const pick = (key, val) => {
+    const next = {...answers, [key]: val};
+    setAnswers(next);
+    if (step < ONBOARD_Q.length - 1) { setStep(step+1); return; }
+    setStep(ONBOARD_Q.length);
+    setSaving(true);
+    sb.from('onboarding').upsert({
+      user_id: uid,
+      tracking_method: next.tracking_method || '',
+      volume: next.volume || '',
+      recaps: next.recaps || '',
+      open_to_better: next.open_to_better || '',
+      completed_at: new Date().toISOString(),
+    }, {onConflict:'user_id'}).then(()=>setSaving(false), ()=>setSaving(false));
+  };
+
+  const finish = () => { try { ls.setItem('earniq_onboarded_'+uid,'1'); } catch(e){} onDone(); };
+
+  if (step >= ONBOARD_Q.length) {
+    const mirror = buildMirror(answers);
+    return (
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div className="fu" style={{width:"100%",maxWidth:560}}>
+          <div style={{textAlign:"center",marginBottom:26}}>
+            <img src={LOGO} alt="EarnIQ" style={{width:56,height:56,borderRadius:14,marginBottom:14}} />
+            <div style={{fontSize:25,fontWeight:800,letterSpacing:"-0.02em",lineHeight:1.2}}>Here's where you stand</div>
+            <div style={{fontSize:13.5,color:"var(--muted)",marginTop:8}}>Based on what you just told us.</div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {mirror.map((m,i)=>(
+              <div key={i} className="card" style={{padding:"18px 20px",display:"flex",gap:14,alignItems:"flex-start"}}>
+                <div style={{fontSize:22,lineHeight:1.2,flexShrink:0}}>{m.icon}</div>
+                <div>
+                  <div style={{fontSize:15,fontWeight:700,marginBottom:5,letterSpacing:"-0.01em"}}>{m.title}</div>
+                  <div style={{fontSize:13.5,color:"var(--muted)",lineHeight:1.6}}>{m.body}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={finish} disabled={saving} style={{...btn('green'),marginTop:22,opacity:saving?0.6:1}}>
+            {saving?'One moment…':'Set up my pay plan →'}
+          </button>
+          <div style={{textAlign:"center",marginTop:14}}>
+            <span onClick={finish} style={{fontSize:12,color:"var(--muted)",cursor:"pointer",textDecoration:"underline"}}>Skip for now</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const cur = ONBOARD_Q[step];
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div className="fu" style={{width:"100%",maxWidth:460}}>
+        <div style={{display:"flex",gap:6,marginBottom:26}}>
+          {ONBOARD_Q.map((_,i)=>(
+            <div key={i} style={{flex:1,height:4,borderRadius:2,background: i<=step ? "var(--green)" : "var(--surface3)"}} />
+          ))}
+        </div>
+        <div style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:10}}>
+          Question {step+1} of {ONBOARD_Q.length}
+        </div>
+        <div style={{fontSize:23,fontWeight:800,letterSpacing:"-0.02em",lineHeight:1.25,marginBottom:8}}>{cur.q}</div>
+        <div style={{fontSize:13.5,color:"var(--muted)",marginBottom:22}}>{cur.sub}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:9}}>
+          {cur.opts.map(([val,label])=>(
+            <button key={val} onClick={()=>pick(cur.key,val)}
+              style={{width:"100%",textAlign:"left",padding:"15px 17px",borderRadius:12,cursor:"pointer",
+                background:"var(--surface)",border:"1px solid var(--border2)",color:"var(--text)",
+                fontSize:14.5,fontWeight:500,transition:"0.12s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--green-border)";e.currentTarget.style.background="var(--green-bg)";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border2)";e.currentTarget.style.background="var(--surface)";}}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {step > 0 && (
+          <div style={{textAlign:"center",marginTop:18}}>
+            <span onClick={()=>setStep(step-1)} style={{fontSize:12,color:"var(--muted)",cursor:"pointer",textDecoration:"underline"}}>Back</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Workspace({session, recovery, clearRecovery}) {
   const uid = session.user.id;
   const [view, setView] = useState('dash');
@@ -1747,6 +1959,7 @@ function Workspace({session, recovery, clearRecovery}) {
   const [subscription, setSubscription] = useState(null);
   const [showUpgrade,  setShowUpgrade]  = useState(false);
   const [showFounder,  setShowFounder]  = useState(false);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [editDeal,     setEditDeal]     = useState(null);
   const [justUpgraded, setJustUpgraded] = useState(false);
   const planRef = useRef(plan);
@@ -1768,13 +1981,18 @@ function Workspace({session, recovery, clearRecovery}) {
 
   useEffect(()=>{ (async()=>{
     try {
-      const [p, d, s, st, subq] = await Promise.all([
+      const [p, d, s, st, subq, onb] = await Promise.all([
         sb.from('profiles').select('*').eq('id',uid).single(),
         sb.from('deals').select('*').order('date',{ascending:false}),
         sb.from('spiffs').select('*').order('date',{ascending:false}),
         sb.from('settings').select('*').eq('user_id',uid).maybeSingle(),
         sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle(),
+        sb.from('onboarding').select('user_id').eq('user_id',uid).maybeSingle(),
       ]);
+      // Only ask brand-new people. Never interrupt anyone with history.
+      let onbSkipped = false;
+      try { onbSkipped = !!ls.getItem('earniq_onboarded_'+uid); } catch(e){}
+      if (!onb.data && !onbSkipped && (d.data||[]).length === 0) setNeedsOnboarding(true);
       if (p.data) setProfile({ name: p.data.name || (session.user.email||'').split('@')[0], role: p.data.role });
       if (subq.data) setSubscription(subq.data);
       setDeals((d.data||[]).map(rowToDeal));
@@ -1818,6 +2036,25 @@ function Workspace({session, recovery, clearRecovery}) {
     } catch(e) { oops('Import failed')(e); }
   };
   const skipImport = () => { ls.setItem('earniq_migrated_'+uid,'1'); setMigrate(null); };
+
+  // A founder code typed at signup gets redeemed here, on the first real session.
+  useEffect(()=>{ (async()=>{
+    let pending = null;
+    try { pending = ls.getItem('earniq_pending_founder_code'); } catch(e){}
+    if (!pending) return;
+    try { ls.removeItem('earniq_pending_founder_code'); } catch(e){}
+    try {
+      const {data, error} = await sb.rpc('redeem_founder_code', {p_code: pending});
+      if (error) throw error;
+      if (data && data.ok) {
+        const {data:sub} = await sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle();
+        if (sub) setSubscription(sub);
+        setJustUpgraded(true);
+      } else {
+        setErr('Founder code: ' + ((data && data.error) || 'could not be redeemed.'));
+      }
+    } catch(e) { setErr('Founder code: ' + (e.message || 'could not be redeemed.')); }
+  })(); }, [uid]);
 
   const addDeal = async (d) => {
     setShowLogDeal(false); setShowImport(false);
@@ -1892,9 +2129,13 @@ function Workspace({session, recovery, clearRecovery}) {
   const gateDeal = (open) => () => { if (atFreeLimit) { setShowUpgrade(true); return; } open(true); };
   const actions = { onImport:gateDeal(setShowImport), onLogDeal:gateDeal(setShowLogDeal), onLogSpiff:()=>setShowLogSpiff(true) };
 
+  if (loaded && needsOnboarding) {
+    return <OnboardingFlow uid={uid} onDone={()=>{ setNeedsOnboarding(false); setView('payplan'); }} />;
+  }
+
   return (
     <div>
-      <Sidebar view={view} setView={setView} name={profile.name} setName={saveName} mtdTotal={stats.mtdTotal} isAdmin={isAdmin} onSignOut={signOut} onDeleteAccount={deleteAccount} email={session.user.email} />
+      <Sidebar view={view} setView={setView} name={profile.name} setName={saveName} mtdTotal={stats.mtdTotal} isAdmin={isAdmin} onSignOut={signOut} onDeleteAccount={deleteAccount} onFounderCode={()=>setShowFounder(true)} hasPro={hasPro} email={session.user.email} />
       <div id="main">
         <div className="container">
           {justUpgraded && hasPro && (
@@ -1954,9 +2195,8 @@ function Workspace({session, recovery, clearRecovery}) {
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
       {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} onFounderCode={()=>{setShowUpgrade(false);setShowFounder(true);}} />}
-      {showFounder  && <FounderCodeModal onClose={()=>setShowFounder(false)} onSuccess={()=>{
+      {showFounder  && <FounderCodeModal onClose={()=>{setShowFounder(false);setJustUpgraded(true);}} onSuccess={()=>{
         sb.from('subscriptions').select('*').eq('user_id',uid).maybeSingle().then(({data})=>{ if(data) setSubscription(data); });
-        setShowFounder(false); setJustUpgraded(true);
       }} />}
       {editDeal     && <LogDealModal  onClose={()=>setEditDeal(null)} onSave={updateDeal} plan={plan} editing={editDeal} />}
       {recovery && <NewPasswordModal onDone={clearRecovery} />}
