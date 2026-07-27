@@ -94,6 +94,48 @@ Files changed:
 4. Adam: re-upload earniq-site to Cloudflare + Purge Everything for updated legal pages
 5. Test: sign up on iPhone app, verify deals sync between phone and myearniq.com
 
+## July 26–27: Founder codes + onboarding questionnaire
+
+### ⚠️ READ THIS FIRST NEXT SESSION
+**Always run `git fetch origin && git log HEAD..origin/main` before writing code.**
+On July 27 Claude built a full founder-code redemption system that already existed —
+Adam had built and pushed one on July 26 at 15:40. Two hours of duplicate work, caught
+only because the push was rejected. The Mac mini is not always the newest copy.
+
+### Founder codes — HOW IT ACTUALLY WORKS
+- 15 codes: FOUNDER-001 … FOUNDER-015, in Supabase table `founder_codes`.
+- Redemption is a **Postgres RPC**: `redeem_founder_code(p_code text)`, SECURITY DEFINER.
+  Called from the browser via `sb.rpc(...)`. There is NO edge function for this.
+- Grants `subscriptions.status = 'founder'` (no expiry). `isProSub()` treats 'founder' as Pro.
+- Entry points (4 total, added July 27):
+  1. **Sidebar "Founder Code" link** — always visible to non-Pro. THE reliable one.
+  2. 🎟 button in the amber banner — only at 10+ deals.
+  3. "Have a founder code?" in the upgrade modal — only at 15 deals.
+  4. Optional field on the signup form — stored in localStorage as
+     `earniq_pending_founder_code`, redeemed on first session (survives email confirmation).
+- **Why a tester couldn't find it:** originally only #2 and #3 existed, both gated behind
+  deal count. Testers with 3 deals saw nothing.
+
+### Security fix (July 27)
+`founder_codes` had an RLS policy `"Anyone can check codes"` with `USING (true)` — any
+signed-in user could read all 15 valid codes. Replaced with a policy limiting SELECT to
+your own redeemed row. All 15 codes verified unused at the time of the fix.
+
+### Onboarding questionnaire (web only)
+- 4 questions → a personalized "here's where you stand" summary → drops into pay plan setup.
+- Answers saved to new table `public.onboarding` (RLS: own rows only).
+- Only shows when: no onboarding row AND zero deals AND no `earniq_onboarded_<uid>` local flag.
+  Existing users are never interrupted.
+- Copy lives in `ONBOARD_Q`; the summary logic is `buildMirror()`.
+
+### Loose ends
+- 🔶 Unused edge function `redeem-founder-code` (Claude's duplicate) still deployed.
+  Delete from Supabase dashboard → Edge Functions. Nothing calls it.
+- 🔶 Neither founder codes nor onboarding exist on iOS. Web-first by choice — let the
+  15 testers validate before spending an App Store review cycle.
+- 🔶 `redeem_founder_code` has no race guard on the UPDATE (no `AND redeemed_by IS NULL`).
+  Harmless at 15 codes; worth hardening if codes ever go out at scale.
+
 ## To start the next session
 Open Claude (Cowork), connect the Desktop folder, and say:
 "Read EARNIQ_PROJECT_NOTES.md in my earniq-web folder and pick up where we left off."
