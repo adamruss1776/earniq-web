@@ -302,9 +302,60 @@ const buildStats = (deals, spiffs, plan, goals) => {
   const projected = dayOfMonth>0 ? Math.round(mtdTotal/dayOfMonth*dim) : 0;
   const paceDelta = projected - goals.monthlyIncome;
 
+  // ── PVR — per vehicle retailed. The native unit of this business. ──
+  const per = (arr, f) => arr.length ? Math.round(arr.reduce((s,d)=>s+(Number(f(d))||0),0)/arr.length) : 0;
+  const mtdNewDeals  = mtdDeals.filter(d=>d.type!=='used');
+  const mtdUsedDeals = mtdDeals.filter(d=>d.type==='used');
+  const gross = d => (Number(d.front)||0) + (Number(d.back)||0);
+  const pvr = {
+    front:     per(mtdDeals, d=>d.front),
+    back:      per(mtdDeals, d=>d.back),
+    total:     per(mtdDeals, gross),
+    frontNew:  per(mtdNewDeals,  d=>d.front),
+    backNew:   per(mtdNewDeals,  d=>d.back),
+    totalNew:  per(mtdNewDeals,  gross),
+    frontUsed: per(mtdUsedDeals, d=>d.front),
+    backUsed:  per(mtdUsedDeals, d=>d.back),
+    totalUsed: per(mtdUsedDeals, gross),
+    pay:       mtdDeals.length ? Math.round(mtdDealPay/mtdDeals.length) : 0,
+  };
+
+  // ── Same-day-last-month. Comparing a partial month to a full one lies. ──
+  const lmDate = new Date(y, m-1, 1);
+  const lm = lmDate.getMonth(), ly = lmDate.getFullYear();
+  const dayOf = x => new Date(x.date+'T00:00:00').getDate();
+  const lmDeals   = deals.filter(d=>inMonth(d.date,lm,ly));
+  const lmSpiffs  = spiffs.filter(s=>inMonth(s.date,lm,ly));
+  const lmDealsTD  = lmDeals.filter(d=>dayOf(d)<=dayOfMonth);
+  const lmSpiffsTD = lmSpiffs.filter(s=>dayOf(s)<=dayOfMonth);
+  const lmPayTD = lmDealsTD.reduce((s,d)=>s+calcMyComm(d,plan),0)
+                + lmSpiffsTD.reduce((s,sp)=>s+(Number(sp.amount)||0),0);
+  const lastMonth = {
+    label: lmDate.toLocaleDateString('en-US',{month:'short'}),
+    hasData: lmDeals.length > 0,
+    unitsTD: lmDealsTD.length,
+    payTD:   Math.round(lmPayTD),
+    grossTD: Math.round(lmDealsTD.reduce((s,d)=>s+gross(d),0)),
+    pvrTD:   lmDealsTD.length ? Math.round(lmDealsTD.reduce((s,d)=>s+gross(d),0)/lmDealsTD.length) : 0,
+    fullPay: Math.round(lmDeals.reduce((s,d)=>s+calcMyComm(d,plan),0)
+                      + lmSpiffs.reduce((s,sp)=>s+(Number(sp.amount)||0),0)),
+    fullUnits: lmDeals.length,
+  };
+
+  // Run-rate projections for the pace table
+  const rate = dayOfMonth>0 ? dim/dayOfMonth : 0;
+  const pace = {
+    units:  Math.round(mtdDeals.length * rate),
+    front:  Math.round(mtdFront * rate),
+    back:   Math.round(mtdBack  * rate),
+    gross:  Math.round((mtdFront+mtdBack) * rate),
+    pay:    projected,
+  };
+
   return { m, y, yr, dim, dayOfMonth, mtdDeals, ytdDeals, mtdSpiffs, ytdSpiffs, ytdMonthly,
            mtdDealPay, mtdSpiffPay, mtdTotal, ytdTotal, mtdFront, mtdBack, frontBackPct,
-           avgDeal, best, streak, cumulative, months, newUnits, usedUnits, projected, paceDelta };
+           avgDeal, best, streak, cumulative, months, newUnits, usedUnits, projected, paceDelta,
+           pvr, lastMonth, pace, mtdNewDeals, mtdUsedDeals };
 };
 
 // ── SVG ICONS ───────────────────────────────────────────────────────
@@ -609,6 +660,115 @@ function Stat({label, value, sub, color, icon}) {
   );
 }
 
+// ── PERFORMANCE TABLE ────────────────────────────────────────────────
+// Laid out the way a store report reads: what you've done, where you land,
+// and how that compares to where you were standing this time last month.
+function Delta({now, then, money=true}) {
+  if (then === 0 || then == null) return <span style={{color:"var(--dim)",fontSize:12}}>—</span>;
+  const diff = now - then;
+  const pct = Math.round(diff/Math.abs(then)*100);
+  if (diff === 0) return <span style={{color:"var(--dim)",fontSize:12}}>flat</span>;
+  const up = diff > 0;
+  return (
+    <span style={{color: up?"var(--green)":"var(--red)", fontSize:12.5, fontWeight:600, whiteSpace:"nowrap"}}>
+      {up?'▲':'▼'} {money?fmt(Math.abs(diff)):Math.abs(diff)}
+      <span style={{color:"var(--dim)",fontWeight:400,marginLeft:5}}>{up?'+':''}{pct}%</span>
+    </span>
+  );
+}
+
+function PerformanceTable({S, goals}) {
+  const th = {textAlign:"right",padding:"10px 14px",fontSize:10,color:"var(--muted)",
+              textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:600,whiteSpace:"nowrap"};
+  const td = {textAlign:"right",padding:"11px 14px",fontSize:13.5,whiteSpace:"nowrap"};
+  const lbl = {textAlign:"left",padding:"11px 14px",fontSize:13,color:"var(--text)",whiteSpace:"nowrap"};
+  const sec = {textAlign:"left",padding:"12px 14px 6px",fontSize:10,color:"var(--muted)",
+               textTransform:"uppercase",letterSpacing:"0.09em",fontWeight:600};
+
+  const Row = ({label, actual, pace, vs, money=true, bold, indent}) => (
+    <tr style={{borderBottom:"1px solid var(--border)", background: bold?"var(--surface2)":"transparent"}}>
+      <td style={{...lbl, paddingLeft: indent?30:14, fontWeight: bold?600:400}}>{label}</td>
+      <td className="num" style={{...td, fontWeight: bold?700:500}}>{money?fmt(actual):actual}</td>
+      <td className="num" style={{...td, color:"var(--muted)"}}>{pace==null?'—':(money?fmt(pace):pace)}</td>
+      <td style={{...td}}>{vs===undefined?<span style={{color:"var(--dim)",fontSize:12}}>—</span>:vs}</td>
+    </tr>
+  );
+
+  const LM = S.lastMonth;
+  const mtdGross = S.mtdFront + S.mtdBack;
+
+  return (
+    <div className="card" style={{overflow:"hidden",marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                   padding:"16px 18px",borderBottom:"1px solid var(--border2)",gap:12,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.01em"}}>Performance</div>
+          <div style={{fontSize:11.5,color:"var(--muted)",marginTop:3}}>
+            Day {S.dayOfMonth} of {S.dim}
+            {LM.hasData && <span> · compared to {LM.label} through day {S.dayOfMonth}</span>}
+          </div>
+        </div>
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:440}}>
+          <thead>
+            <tr style={{borderBottom:"1px solid var(--border2)"}}>
+              <th style={{...th,textAlign:"left"}}>&nbsp;</th>
+              <th style={th}>Actual</th>
+              <th style={th}>On Pace</th>
+              <th style={th}>vs {LM.hasData?LM.label:'—'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colSpan={4} style={sec}>Volume</td></tr>
+            <Row label="Units" actual={S.mtdDeals.length} pace={S.pace.units} money={false}
+                 vs={LM.hasData ? <Delta now={S.mtdDeals.length} then={LM.unitsTD} money={false}/> : undefined} bold />
+            <Row label="New" actual={S.newUnits} pace={null} money={false} indent />
+            <Row label="Pre-owned" actual={S.usedUnits} pace={null} money={false} indent />
+
+            <tr><td colSpan={4} style={sec}>Gross</td></tr>
+            <Row label="Front" actual={S.mtdFront} pace={S.pace.front} />
+            <Row label="Back" actual={S.mtdBack} pace={S.pace.back} />
+            <Row label="Total gross" actual={mtdGross} pace={S.pace.gross} bold
+                 vs={LM.hasData ? <Delta now={mtdGross} then={LM.grossTD}/> : undefined} />
+
+            <tr><td colSpan={4} style={sec}>PVR — per vehicle retailed</td></tr>
+            <Row label="Front PVR" actual={S.pvr.front} pace={null} />
+            <Row label="Back PVR" actual={S.pvr.back} pace={null} />
+            <Row label="Total PVR" actual={S.pvr.total} pace={null} bold
+                 vs={LM.hasData ? <Delta now={S.pvr.total} then={LM.pvrTD}/> : undefined} />
+            {S.mtdNewDeals.length>0 && <Row label="New PVR" actual={S.pvr.totalNew} pace={null} indent />}
+            {S.mtdUsedDeals.length>0 && <Row label="Pre-owned PVR" actual={S.pvr.totalUsed} pace={null} indent />}
+
+            <tr><td colSpan={4} style={sec}>Your pay</td></tr>
+            <Row label="Pay per unit" actual={S.pvr.pay} pace={null} />
+            <Row label="Earned" actual={S.mtdTotal} pace={S.pace.pay} bold
+                 vs={LM.hasData ? <Delta now={S.mtdTotal} then={LM.payTD}/> : undefined} />
+            {goals.monthlyIncome>0 && (
+              <tr style={{background:"var(--surface2)"}}>
+                <td style={{...lbl,fontWeight:600}}>Goal</td>
+                <td className="num" style={{...td,color:"var(--muted)"}}>{fmt(goals.monthlyIncome)}</td>
+                <td className="num" style={{...td,fontWeight:700,
+                    color: S.paceDelta>=0?"var(--green)":"var(--amber)"}}>
+                  {S.paceDelta>=0?'+':''}{fmt(S.paceDelta)}
+                </td>
+                <td style={{...td,fontSize:12,color:"var(--muted)"}}>
+                  {S.paceDelta>=0?'ahead':'behind'}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {!LM.hasData && (
+        <div style={{padding:"11px 18px",fontSize:11.5,color:"var(--dim)",borderTop:"1px solid var(--border)"}}>
+          Month-over-month comparison starts once you have a full prior month logged.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── DASHBOARD ───────────────────────────────────────────────────────
 function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpiff}) {
   const S = stats;
@@ -782,6 +942,8 @@ function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpif
         <Stat label="Best Deal" value={S.best?fmt(S.best.comm):'—'} sub={S.best?(S.best.deal.vehicle||'').slice(0,20):'this month'} color="var(--green)" icon={<Icon d={ICONS.trophy} size={15}/>} />
         <Stat label="Deal Streak" value={S.streak>0?S.streak+'w':'—'} sub="weeks w/ a deal" color={S.streak>2?"var(--amber)":undefined} icon={<Icon d={ICONS.fire} size={15}/>} />
       </div>
+
+      <PerformanceTable S={S} goals={goals} />
 
       {/* Charts */}
       <div className="grid-charts" style={{marginBottom:14}}>
