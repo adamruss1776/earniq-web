@@ -218,10 +218,12 @@ const isCapped = (deal, plan) => {
   const cap = isUsed ? plan.usedFrontCap    : plan.newFrontCap;
   return front * pct > cap;
 };
+// Sales year runs Dec 1 – Nov 30: a December deal counts toward the NEXT year.
+const salesYearOf = (iso) => { const dt = (iso instanceof Date) ? iso : new Date(iso+'T00:00:00'); return dt.getMonth()===11 ? dt.getFullYear()+1 : dt.getFullYear(); };
 const getMonth = () => { const d=new Date(); return {m:d.getMonth(),y:d.getFullYear()}; };
-const getYear  = () => new Date().getFullYear();
+const getYear  = () => salesYearOf(new Date());
 const inMonth  = (iso,m,y) => { const dt=new Date(iso+'T00:00:00'); return dt.getMonth()===m && dt.getFullYear()===y; };
-const inYear   = (iso,y)   => new Date(iso+'T00:00:00').getFullYear()===y;
+const inYear   = (iso,y)   => salesYearOf(iso)===y;
 const daysInMonth = (m,y) => new Date(y, m+1, 0).getDate();
 
 const weekKey = (d) => {
@@ -1636,13 +1638,13 @@ const MONTH_NAMES = ['January','February','March','April','May','June','July','A
 function WashoutUploadModal({onClose, onSaved, uid}) {
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth()+1);
-  const [year, setYear]   = useState(now.getFullYear());
+  const [year, setYear]   = useState(salesYearOf(now));
   const [notes, setNotes] = useState('');
   const [file, setFile]   = useState(null);
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
-  const years = Array.from({length:6},(_,i)=>now.getFullYear()-i);
+  const years = Array.from({length:6},(_,i)=>salesYearOf(now)-i);
 
   const save = async () => {
     if (!file) { setError('Pick a photo or PDF of your washout sheet first.'); return; }
