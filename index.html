@@ -14,6 +14,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>if(window['pdfjs-dist/build/pdf'])window['pdfjs-dist/build/pdf'].GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -217,10 +218,12 @@ const isCapped = (deal, plan) => {
   const cap = isUsed ? plan.usedFrontCap    : plan.newFrontCap;
   return front * pct > cap;
 };
+// Sales year runs Dec 1 – Nov 30: a December deal counts toward the NEXT year.
+const salesYearOf = (iso) => { const dt = (iso instanceof Date) ? iso : new Date(iso+'T00:00:00'); return dt.getMonth()===11 ? dt.getFullYear()+1 : dt.getFullYear(); };
 const getMonth = () => { const d=new Date(); return {m:d.getMonth(),y:d.getFullYear()}; };
-const getYear  = () => new Date().getFullYear();
+const getYear  = () => salesYearOf(new Date());
 const inMonth  = (iso,m,y) => { const dt=new Date(iso+'T00:00:00'); return dt.getMonth()===m && dt.getFullYear()===y; };
-const inYear   = (iso,y)   => new Date(iso+'T00:00:00').getFullYear()===y;
+const inYear   = (iso,y)   => salesYearOf(iso)===y;
 const daysInMonth = (m,y) => new Date(y, m+1, 0).getDate();
 
 const weekKey = (d) => {
@@ -597,6 +600,159 @@ function LogDealModal({onClose, onSave, plan, initial, editing}) {
 }
 
 // ── IMPORT MODAL ─────────────────────────────────────────────────────
+// ── BULK IMPORT MODAL (zip of recap images → dedup → review → save) ──
+function BulkImportModal({ onClose, onSave, existingDeals, plan }) {
+  const [stage, setStage] = useState('drop'); // drop | working | review
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [rows, setRows] = useState([]);
+  const [skipped, setSkipped] = useState({ dupeFiles: 0, dupeDeals: 0, failed: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [note, setNote] = useState(null);
+
+  const existingKeys = React.useMemo(() => {
+    const s = new Set();
+    (existingDeals || []).forEach(d => {
+      if (d.stockNum) s.add('sn:' + String(d.stockNum).trim().toUpperCase());
+      s.add('df:' + (d.date || '') + '|' + Math.round((Number(d.front) || 0) * 100));
+    });
+    return s;
+  }, [existingDeals]);
+
+  const sha = async (buf) => {
+    const h = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+  const keyOf = (d) => d.stockNum ? 'sn:' + String(d.stockNum).trim().toUpperCase()
+    : 'df:' + (d.date || '') + '|' + Math.round((Number(d.front) || 0) * 100);
+
+  const handleZip = async (file) => {
+    if (!window.JSZip) { setNote('Zip reader still loading — refresh and try again.'); return; }
+    setStage('working'); setNote(null);
+    let zip;
+    try { zip = await window.JSZip.loadAsync(file); }
+    catch (e) { setNote('Could not open that .zip file.'); setStage('drop'); return; }
+    const imgs = [];
+    zip.forEach((path, entry) => {
+      if (entry.dir || path.includes('__MACOSX') || path.split('/').pop().startsWith('.')) return;
+      if (/\.(png|jpe?g|pdf)$/i.test(path)) imgs.push(entry);
+    });
+    if (!imgs.length) { setNote('No images or PDFs found in that zip.'); setStage('drop'); return; }
+
+    setProgress({ done: 0, total: imgs.length });
+    const seenFiles = new Set();
+    const batchKeys = new Set();
+    const out = [];
+    const skip = { dupeFiles: 0, dupeDeals: 0, failed: 0 };
+
+    for (let i = 0; i < imgs.length; i++) {
+      try {
+        const buf = await imgs[i].async('arraybuffer');
+        const fh = await sha(buf);
+        if (seenFiles.has(fh)) { skip.dupeFiles++; setProgress({ done: i + 1, total: imgs.length }); continue; }
+        seenFiles.add(fh);
+        const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''));
+        const nm = (imgs[i].name || '').toLowerCase();
+        const mime = nm.endsWith('.pdf') ? 'application/pdf' : (nm.endsWith('.png') ? 'image/png' : 'image/jpeg');
+        const resp = await fetch(OCR_SERVER + '/api/ocr', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: b64, mimeType: mime }),
+        });
+        if (!resp.ok) { skip.failed++; setProgress({ done: i + 1, total: imgs.length }); continue; }
+        const r = await resp.json();
+        if (!((r.fieldsFound || 0) > 0)) { skip.failed++; setProgress({ done: i + 1, total: imgs.length }); continue; }
+        const deal = {
+          id: Date.now() + i,
+          date: (r.dateCertain && r.date) ? r.date : new Date().toISOString().split('T')[0],
+          vehicle: r.vehicleName || '', stockNum: r.stockNum || '',
+          type: r.type === 'used' ? 'used' : 'new',
+          front: r.frontGross || 0, back: r.backGross || 0,
+          split_pct: 100, split_with: '', notes: '', include: true,
+        };
+        const k = keyOf(deal);
+        if (existingKeys.has(k) || batchKeys.has(k)) { skip.dupeDeals++; setProgress({ done: i + 1, total: imgs.length }); continue; }
+        batchKeys.add(k);
+        out.push(deal);
+      } catch (e) { skip.failed++; }
+      setProgress({ done: i + 1, total: imgs.length });
+    }
+    setRows(out); setSkipped(skip); setStage('review');
+  };
+
+  const save = () => {
+    const chosen = rows.filter(r => r.include).map(({ include, ...d }) => d);
+    onSave(chosen);
+  };
+
+  const lbl = { fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--dim)' };
+  const cell = { padding: '7px 8px', fontSize: 12, color: 'var(--text)', borderBottom: '1px solid var(--border)' };
+
+  return (
+    <Modal onClose={onClose} title="Bulk Import">
+      {stage === 'drop' && (
+        <div
+          onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.zip'; inp.onchange = e => e.target.files[0] && handleZip(e.target.files[0]); inp.click(); }}
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleZip(f); }}
+          style={{ border: '2px dashed ' + (dragging ? 'var(--green)' : 'var(--border2)'), borderRadius: 12, padding: 40, textAlign: 'center', cursor: 'pointer', background: dragging ? 'var(--green-bg)' : 'var(--surface3)' }}>
+          <div style={{ fontSize: 30, marginBottom: 10 }}>📦</div>
+          <div style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6 }}>Drop a .zip of deal recaps (screenshots, photos, or PDFs)</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>Reads each one, removes duplicates, and lets you review before saving</div>
+        </div>
+      )}
+      {note && <div style={{ color: 'var(--red, #e5484d)', fontSize: 12, marginTop: 12 }}>⚠ {note}</div>}
+
+      {stage === 'working' && (
+        <div style={{ textAlign: 'center', padding: 34 }}>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>Reading deals… {progress.done} of {progress.total}</div>
+          <div style={{ height: 6, background: 'var(--surface3)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: (progress.total ? (progress.done / progress.total) * 100 : 0) + '%', background: 'var(--green)', transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--dim)', marginTop: 12 }}>Each recap takes a few seconds — hang tight.</div>
+        </div>
+      )}
+
+      {stage === 'review' && (
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+            <span style={{ color: 'var(--green)' }}>✓ {rows.length} new deal{rows.length !== 1 ? 's' : ''} ready</span>
+            {skipped.dupeFiles + skipped.dupeDeals > 0 && <span> · {skipped.dupeFiles + skipped.dupeDeals} duplicate{skipped.dupeFiles + skipped.dupeDeals !== 1 ? 's' : ''} skipped</span>}
+            {skipped.failed > 0 && <span> · {skipped.failed} couldn't be read</span>}
+          </div>
+          {rows.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 26, color: 'var(--muted)', fontSize: 13 }}>Every deal in this zip is already in your numbers — nothing new to add.</div>
+          ) : (
+            <div style={{ maxHeight: '46vh', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+                <thead><tr>
+                  {['', 'Date', 'Vehicle', 'Type', 'Front', 'Back'].map(h => <th key={h} style={{ ...cell, ...lbl, textAlign: 'left', color: 'var(--dim)' }}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} style={{ opacity: r.include ? 1 : 0.4 }}>
+                      <td style={cell}><input type="checkbox" checked={r.include} onChange={e => setRows(rs => rs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} /></td>
+                      <td style={cell}>{r.date}</td>
+                      <td style={cell}>{r.vehicle}</td>
+                      <td style={cell}>{r.type}</td>
+                      <td style={cell}>${(Number(r.front) || 0).toLocaleString()}</td>
+                      <td style={cell}>${(Number(r.back) || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {rows.length > 0 && (
+            <button onClick={save} style={{ ...btn('green'), marginTop: 18 }}>
+              Add {rows.filter(r => r.include).length} Deals to My Numbers
+            </button>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function ImportModal({onClose, onSave, plan}) {
   const [stage, setStage] = useState('pick');
   const [error, setError] = useState(null);
@@ -856,7 +1012,7 @@ function PerformanceTable({S, goals}) {
 }
 
 // ── DASHBOARD ───────────────────────────────────────────────────────
-function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpiff}) {
+function DashboardView({stats, goals, plan, name, onImport, onBulkImport, onLogDeal, onLogSpiff}) {
   const S = stats;
   const goalPct = goals.monthlyIncome>0 ? Math.round(S.mtdTotal/goals.monthlyIncome*100) : 0;
   const monthName = new Date().toLocaleDateString('en-US',{month:'long', year:'numeric'});
@@ -966,6 +1122,7 @@ function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpif
         </div>
         <div style={{display:"flex",gap:9}}>
           <button onClick={onImport} style={pillBtn()}>📄 Import Sheet</button>
+          <button onClick={onBulkImport} style={pillBtn()}>📦 Bulk</button>
           <button onClick={onLogSpiff} style={pillBtn('amber')}>+ Spiff</button>
           <button onClick={onLogDeal} style={pillBtn('green')}>+ Log Deal</button>
         </div>
@@ -1105,7 +1262,7 @@ function DashboardView({stats, goals, plan, name, onImport, onLogDeal, onLogSpif
 }
 
 // ── DEALS VIEW ──────────────────────────────────────────────────────
-function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal, onImport, onLogDeal, onLogSpiff}) {
+function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal, onImport, onBulkImport, onLogDeal, onLogSpiff}) {
   const isMobile = useIsMobile();
   const [filter, setFilter] = useState('mtd');
   const [q, setQ] = useState('');
@@ -1135,6 +1292,7 @@ function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal
         <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
           <button onClick={exportCSV} style={pillBtn()}>⬇ Export CSV</button>
           <button onClick={onImport} style={pillBtn()}>📄 Import</button>
+          <button onClick={onBulkImport} style={pillBtn()}>📦 Bulk</button>
           <button onClick={onLogSpiff} style={pillBtn('amber')}>+ Spiff</button>
           <button onClick={onLogDeal} style={pillBtn('green')}>+ Log Deal</button>
         </div>
@@ -1480,13 +1638,13 @@ const MONTH_NAMES = ['January','February','March','April','May','June','July','A
 function WashoutUploadModal({onClose, onSaved, uid}) {
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth()+1);
-  const [year, setYear]   = useState(now.getFullYear());
+  const [year, setYear]   = useState(salesYearOf(now));
   const [notes, setNotes] = useState('');
   const [file, setFile]   = useState(null);
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
-  const years = Array.from({length:6},(_,i)=>now.getFullYear()-i);
+  const years = Array.from({length:6},(_,i)=>salesYearOf(now)-i);
 
   const save = async () => {
     if (!file) { setError('Pick a photo or PDF of your washout sheet first.'); return; }
@@ -2521,6 +2679,7 @@ function Workspace({session, recovery, clearRecovery}) {
   const [err, setErr] = useState(null);
   const [showImport,   setShowImport]   = useState(false);
   const [showLogDeal,  setShowLogDeal]  = useState(false);
+  const [showBulk,     setShowBulk]     = useState(false);
   const [showLogSpiff, setShowLogSpiff] = useState(false);
   const [subscription, setSubscription] = useState(null);
   const [showUpgrade,  setShowUpgrade]  = useState(false);
@@ -2694,8 +2853,16 @@ function Workspace({session, recovery, clearRecovery}) {
   const isAdmin = profile.role==='admin';
   const hasPro = isAdmin || isProSub(subscription);
   const atFreeLimit = !hasPro && deals.length >= FREE_DEAL_LIMIT;
+  const bulkAddDeals = async (arr) => {
+    setShowBulk(false);
+    if (!arr.length) return;
+    const rows = arr.map(d=>dealToRow(d,uid));
+    const {data,error} = await sb.from('deals').insert(rows).select();
+    if (error) { oops('Could not save deals')(error); return; }
+    setDeals(prev=>[...(data||[]).map(rowToDeal),...prev].sort((a,b)=>new Date(b.date)-new Date(a.date)));
+  };
   const gateDeal = (open) => () => { if (atFreeLimit) { setShowUpgrade(true); return; } open(true); };
-  const actions = { onImport:gateDeal(setShowImport), onLogDeal:gateDeal(setShowLogDeal), onLogSpiff:()=>setShowLogSpiff(true) };
+  const actions = { onImport:gateDeal(setShowImport), onBulkImport:gateDeal(setShowBulk), onLogDeal:gateDeal(setShowLogDeal), onLogSpiff:()=>setShowLogSpiff(true) };
 
   if (loaded && needsOnboarding) {
     return <OnboardingFlow uid={uid} onDone={()=>{ setNeedsOnboarding(false); setView('payplan'); }} />;
@@ -2765,6 +2932,7 @@ function Workspace({session, recovery, clearRecovery}) {
       <MobileNav view={view} setView={setView} isAdmin={isAdmin} />
       {showImport   && <ImportModal   onClose={()=>setShowImport(false)}   onSave={addDeal}   plan={plan} />}
       {showLogDeal  && <LogDealModal  onClose={()=>setShowLogDeal(false)}  onSave={addDeal}   plan={plan} />}
+      {showBulk     && <BulkImportModal onClose={()=>setShowBulk(false)} onSave={bulkAddDeals} existingDeals={deals} plan={plan} />}
       {showLogSpiff && <LogSpiffModal onClose={()=>setShowLogSpiff(false)} onSave={addSpiff} />}
       {showUpgrade  && <UpgradeModal  onClose={()=>setShowUpgrade(false)} dealCount={deals.length} onFounderCode={()=>{setShowUpgrade(false);setShowFounder(true);}} />}
       {showFounder  && <FounderCodeModal onClose={()=>{setShowFounder(false);setJustUpgraded(true);}} onSuccess={()=>{
