@@ -136,6 +136,96 @@ your own redeemed row. All 15 codes verified unused at the time of the fix.
 - 🔶 `redeem_founder_code` has no race guard on the UPDATE (no `AND redeemed_by IS NULL`).
   Harmless at 15 codes; worth hardening if codes ever go out at scale.
 
+## July 27–28: AI Sales Coach + industry metrics
+
+### ⚠️ THE FETCH RULE — READ BEFORE WRITING ANY CODE
+`git fetch origin && git log HEAD..origin/main` **on every repo, every session.**
+This was violated twice in two days:
+- Jul 27: rebuilt a founder-code system Adam had already shipped (2 hrs wasted)
+- Jul 28: edited Pinnacle's index.html while 9 commits / 11 days behind
+
+Root cause found Jul 28 on pinnacle-crm: the repo had **no fetch refspec**, so
+`origin/main` never existed locally, `git status` could never report "behind", and the
+Mac drifted silently. Fixed with:
+`git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"`
+**Check the other repos for the same fault.** Tell: `git status` never says "behind".
+
+### AI COACH — live on myearniq.com
+Three pillars, all Pro-gated (admins and `founder` status included).
+
+**Backend — two Supabase edge functions, project `earniq`:**
+- `coach` — deal reviews + weekly report cards. Cheap model.
+- `coach-ask` — the guided Q&A. Strong model for cached answers, cheap for personalized.
+- Key lives in Supabase → Edge Functions → Secrets. Works with either
+  `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; the code detects which is present.
+  **Currently running on OpenAI.**
+
+**Cost design (this is the important part):**
+- The 12 generic coaching answers are IDENTICAL for every user → generated once,
+  cached in `coach_answers`, served free forever after. 15 users asking the same
+  question = 1 API call total.
+- Deal reviews cached per deal in `coach_insights` (unique index prevents double-billing).
+- Weekly reports cached per user per week (unique index).
+- Free-text questions rate limited to 10/user/day via `bump_coach_usage(p_limit)`.
+- Personalized "My Numbers" answers are per-user, cheap model, not cached.
+
+**Tables added:** `coach_insights`, `coach_answers`, `coach_usage`, `onboarding`.
+
+**Voice — do not soften this.** First attempt produced corporate filler
+("Acknowledge Their Concern", "Navigating Customer Hesitation"). A 10-year industry
+veteran called the rewrite "pretty damn good." What fixed it:
+1. A full worked example in the prompt, not just instructions
+2. Explicitly banned phrases (acknowledge/validate/rapport/"it's a big decision")
+3. The test that catches filler: *would this advice work equally well selling insurance?*
+4. Stronger model for the cached-forever answers (~$0.25 one time, total)
+- Admin-only `regenerate: true` flag refreshes a single weak answer.
+- **Hard rule in every prompt: use only the user's own numbers. Never invent an
+  industry benchmark.** A salesperson may repeat these figures to their manager.
+
+### Industry metrics on the dashboard (the ReverseRisk lesson)
+A tester compared EarnIQ to **ReverseRisk (Reynolds & Reynolds)** and found it "thin."
+Assessment: not a competitor — ReverseRisk is a DMS-integrated store P&L tool for GMs
+and controllers; a salesperson can't buy it and it doesn't show personal commission.
+It is literally the asymmetry EarnIQ exists to fix. But three ideas were worth taking:
+- **PVR** (per vehicle retailed) — front/back/total, split new vs pre-owned
+- **Actual / On Pace / vs Last Month** columns with "Day X of Y"
+- Variance arrows
+Built into `buildStats()` + new `PerformanceTable` component. Math unit-tested.
+- Comparison is **same-day-to-same-day** (day 27 vs day 27), never partial-vs-full month.
+- Shows dashes + an explanation when there's no prior month. Never fabricates a baseline.
+
+### Founder codes (resolved Jul 27)
+- Adam's `redeem_founder_code(p_code)` RPC is the real one. Claude's duplicate edge
+  function was deleted.
+- Four entry points now: sidebar link (always visible to non-Pro), 🎟 banner button
+  (10+ deals), upgrade modal link (15 deals), signup field (held in localStorage as
+  `earniq_pending_founder_code`, redeemed on first session).
+- RLS hole closed: `founder_codes` had `USING (true)` — any signed-in user could read
+  all 15 valid codes.
+- **All 15 codes still unredeemed as of Jul 28.**
+
+### Onboarding questionnaire
+4 questions → personalized "here's where you stand" summary → pay plan setup.
+Only fires for accounts with no onboarding row AND zero deals. Copy in `ONBOARD_Q`,
+summary logic in `buildMirror()`.
+
+### Real users so far
+- tyler_grant@hotmail.com — signed up Jul 27, returned once, **0 deals**
+- jessicalynnjames@hotmail.com — signed up Jul 26, returned once, **0 deals**
+Two people, two sessions each, zero deals logged. **This is the most important
+unanswered question in the project** — something blocks the gap between "I have an
+account" and "I logged a deal." Ask them directly before building anything else.
+
+### Open
+- 🔶 11 of 12 generic coach answers not yet pre-warmed — a tester could be first to
+  generate one and see it before Adam does
+- 🔶 `earniq-site` not uploaded to Cloudflare (AI Coach section, "Built for the sales
+  floor", App Store button on "Get the App", support@ on all 3 pages) + Purge Everything
+- 🔶 EarnIQ web PVR/pace table may not be pushed yet
+- 🔶 Coach + onboarding + PVR are **web only**. iOS unchanged and still in App Store review.
+- 🔶 Landing page sample of the coach's answer was written from memory — match it to the
+  real cached `ob1` output
+
 ## To start the next session
 Open Claude (Cowork), connect the Desktop folder, and say:
 "Read EARNIQ_PROJECT_NOTES.md in my earniq-web folder and pick up where we left off."
