@@ -179,16 +179,19 @@ const sb = window.supabase ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : 
 
 const rowToDeal = (r) => ({ id:r.id, date:r.date, vehicle:r.vehicle||'', stockNum:r.stock_num||'', type:r.type||'new',
   front:r.front==null||Number(r.front)===0?'':Number(r.front), back:r.back==null||Number(r.back)===0?'':Number(r.back),
-  split_pct:r.split_pct==null?100:Number(r.split_pct), split_with:r.split_with||'', notes:r.notes||'' });
+  split_pct:r.split_pct==null?100:Number(r.split_pct), split_with:r.split_with||'', notes:r.notes||'',
+  is_flat:!!r.is_flat, flat_amount:r.flat_amount==null?'':Number(r.flat_amount) });
 const dealToRow = (d, uid) => ({ user_id:uid, date:d.date, vehicle:d.vehicle||'', stock_num:d.stockNum||'', type:d.type||'new',
-  front:Number(d.front)||0, back:Number(d.back)||0, split_pct:Number(d.split_pct)||100, split_with:d.split_with||'', notes:d.notes||'' });
+  front:Number(d.front)||0, back:Number(d.back)||0, split_pct:Number(d.split_pct)||100, split_with:d.split_with||'', notes:d.notes||'',
+  is_flat:!!d.is_flat, flat_amount:d.is_flat&&d.flat_amount!==''?Number(d.flat_amount):null });
 const rowToSpiff = (r) => ({ id:r.id, date:r.date, description:r.description||'', amount:Number(r.amount)||0 });
 
 // ── DEFAULTS ────────────────────────────────────────────────────────
 const DEFAULT_PLAN = {
   newFrontPct: 15, newFrontCap: 6000,
   usedFrontPct: 20, usedFrontCap: 7500,
-  backPct: 10, capsEnabled: true
+  backPct: 10, capsEnabled: true,
+  flatAmount: 500, reservePct: 75
 };
 const DEFAULT_GOALS = { monthlyIncome: 20000, monthlyUnits: 10, yearlyIncome: 240000 };
 
@@ -200,7 +203,9 @@ const fmtD = (iso) => {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
 };
+const flatFor = (deal, plan) => deal.flat_amount!=='' && deal.flat_amount!=null ? Number(deal.flat_amount)||0 : (Number(plan.flatAmount)||0);
 const calcGross = (deal, plan) => {
+  if (deal.is_flat) return Math.round(flatFor(deal, plan));
   const front = Number(deal.front) || 0;
   const back  = Number(deal.back)  || 0;
   const isUsed = deal.type === 'used';
@@ -211,6 +216,7 @@ const calcGross = (deal, plan) => {
 };
 const calcMyComm = (deal, plan) => Math.round(calcGross(deal,plan) * (Number(deal.split_pct)||100) / 100);
 const isCapped = (deal, plan) => {
+  if (deal.is_flat) return false;
   if (!plan.capsEnabled) return false;
   const front = Number(deal.front) || 0;
   const isUsed = deal.type === 'used';
@@ -276,7 +282,7 @@ const extractFields = (txt) => {
 };
 
 // ── EMPTY OBJECTS ───────────────────────────────────────────────────
-const emptyDeal  = () => ({ date:new Date().toISOString().split('T')[0], vehicle:'', stockNum:'', type:'new', front:'', back:'', split_pct:100, split_with:'', notes:'' });
+const emptyDeal  = () => ({ date:new Date().toISOString().split('T')[0], vehicle:'', stockNum:'', type:'new', front:'', back:'', split_pct:100, split_with:'', notes:'', is_flat:false, flat_amount:'' });
 const emptySpiff = () => ({ date:new Date().toISOString().split('T')[0], description:'', amount:'' });
 
 // ── SHARED STYLES ───────────────────────────────────────────────────
@@ -464,6 +470,7 @@ const ICONS = {
   users:  ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2","M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z","M22 21v-2a4 4 0 0 0-3-3.87","M16 3.13a4 4 0 0 1 0 7.75"],
   out:    ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4","M16 17l5-5-5-5","M21 12H9"],
   binder: ["M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"],
+  calc:   ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z","M8 6h8","M8 11h.01","M12 11h.01","M16 11h.01","M8 15h.01","M12 15h.01","M16 15h.01","M8 19h.01","M12 19h.01","M16 19h.01"],
 };
 
 // ── PROGRESS RING ───────────────────────────────────────────────────
@@ -490,7 +497,7 @@ function Ring({pct, size=120, stroke=9, color='var(--green)', children}) {
 function CommPreview({deal, plan}) {
   const front = Number(deal.front)||0;
   const back  = Number(deal.back)||0;
-  if (!front && !back) return null;
+  if (!front && !back && !deal.is_flat) return null;
   const gross  = calcGross(deal, plan);
   const mine   = calcMyComm(deal, plan);
   const capped = isCapped(deal, plan);
@@ -505,15 +512,21 @@ function CommPreview({deal, plan}) {
           <div className="num" style={{fontSize:34,fontWeight:700,color:"var(--green)",lineHeight:1}}>{fmt(mine)}</div>
           {split<100 && <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>Gross total: {fmt(gross)}</div>}
         </div>
-        {capped && (
+        {deal.is_flat && (
+          <div style={{background:"var(--amber-bg)",border:"1px solid var(--amber-border)",borderRadius:8,padding:"5px 11px",fontSize:11,color:"var(--amber)",fontWeight:600}}>
+            Flat
+          </div>
+        )}
+        {capped && !deal.is_flat && (
           <div style={{background:"var(--amber-bg)",border:"1px solid var(--amber-border)",borderRadius:8,padding:"5px 11px",fontSize:11,color:"var(--amber)",fontWeight:600}}>
             ⚡ Capped
           </div>
         )}
       </div>
       <div style={{display:"flex",gap:16,marginTop:10,paddingTop:10,borderTop:"1px solid rgba(34,197,94,0.15)"}}>
-        {front>0 && <div style={{fontSize:11,color:"var(--muted)"}}>Front: <span style={{color:"var(--text)"}}>{fmt(front)}</span></div>}
-        {back>0  && <div style={{fontSize:11,color:"var(--muted)"}}>Back: <span style={{color:"var(--text)"}}>{fmt(back)}</span></div>}
+        {deal.is_flat && <div style={{fontSize:11,color:"var(--muted)"}}>Flat deal — pays a set amount instead of a % of gross</div>}
+        {!deal.is_flat && front>0 && <div style={{fontSize:11,color:"var(--muted)"}}>Front: <span style={{color:"var(--text)"}}>{fmt(front)}</span></div>}
+        {!deal.is_flat && back>0  && <div style={{fontSize:11,color:"var(--muted)"}}>Back: <span style={{color:"var(--text)"}}>{fmt(back)}</span></div>}
       </div>
     </div>
   );
@@ -574,6 +587,21 @@ function LogDealModal({onClose, onSave, plan, initial, editing}) {
           <input type="number" value={form.back} onChange={e=>s('back',e.target.value)} placeholder="0" style={inp} />
         </div>
       </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:14}}>
+        <div>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>Flat Deal</div>
+          <div style={{fontSize:12,color:"var(--muted)"}}>Pays a set minimum instead of a % of gross</div>
+        </div>
+        <div onClick={()=>s('is_flat',!form.is_flat)} style={{width:48,height:28,borderRadius:14,background:form.is_flat?"var(--amber)":"var(--surface3)",border:`1px solid ${form.is_flat?"transparent":"var(--border2)"}`,position:"relative",cursor:"pointer",transition:"background 0.2s",flexShrink:0}}>
+          <div style={{position:"absolute",top:3,left:form.is_flat?23:3,width:22,height:22,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 3px rgba(0,0,0,0.4)"}} />
+        </div>
+      </div>
+      {form.is_flat && (
+        <div style={{marginTop:10}}>
+          <label style={lbl}>Flat Amount ($)</label>
+          <input type="number" value={form.flat_amount} onChange={e=>s('flat_amount',e.target.value)} placeholder={String(plan.flatAmount||500)+' (your pay plan default)'} style={inp} />
+        </div>
+      )}
       <CommPreview deal={form} plan={plan} />
       <div style={{marginTop:18,paddingTop:18,borderTop:"1px solid var(--border)"}}>
         <label style={lbl}>Split Deal</label>
@@ -1559,9 +1587,107 @@ function GoalsView({stats, goals, setGoals}) {
 }
 
 // ── PAY PLAN VIEW ───────────────────────────────────────────────────
+// ── CALCULATOR ──────────────────────────────────────────────────────
+const loanInterest = (P, aprPct, months) => {
+  P = Number(P)||0; months = Number(months)||0;
+  const r = (Number(aprPct)||0)/100/12;
+  if (P<=0 || months<=0) return 0;
+  if (r===0) return 0;
+  const pay = P * r / (1 - Math.pow(1+r, -months));
+  return pay * months - P;
+};
+
+function CalculatorView({plan}) {
+  const [test, setTest] = useState({type:'new',front:'',back:'',split_pct:100,is_flat:false,flat_amount:''});
+  const [fin, setFin] = useState({amount:'', term:60, buyRate:'', sellRate:''});
+  const [sellTouched, setSellTouched] = useState(false);
+  const sf = (k,v) => setFin(f=>{
+    if (k==='sellRate') { setSellTouched(true); return {...f, sellRate:v}; }
+    if (k==='buyRate' && !sellTouched) {
+      const b = Number(v);
+      return {...f, buyRate:v, sellRate: v!=='' && !isNaN(b) ? String(Math.round((b+2)*100)/100) : ''};
+    }
+    return {...f,[k]:v};
+  });
+
+  const intBuy  = loanInterest(fin.amount, fin.buyRate, fin.term);
+  const intSell = loanInterest(fin.amount, fin.sellRate, fin.term);
+  const spread  = Math.max(0, intSell - intBuy);
+  const partPct = Number(plan.reservePct)||75;
+  const reserve = spread * partPct/100;
+  const myCut   = reserve * (Number(plan.backPct)||0)/100;
+  const hasFin  = Number(fin.amount)>0 && Number(fin.sellRate)>0;
+
+  const finField = (label, key, ph, step) => (
+    <div>
+      <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>{label}</div>
+      <input type="number" step={step||"any"} placeholder={ph} value={fin[key]} onChange={e=>sf(key,e.target.value)} style={inp} />
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{fontSize:25,fontWeight:700,letterSpacing:"-0.02em",marginBottom:24}}>Deal Calculator</div>
+      <div className="grid-2" style={{marginBottom:14}}>
+        <div className="card" style={{border:"1px solid var(--green-border)",padding:"20px 22px"}}>
+          <div style={{fontSize:11,color:"var(--green)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:6}}>Commission Calculator</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:14}}>What you'd make on a deal, using your pay plan.</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            {['new','used'].map(t=>(
+              <button key={t} onClick={()=>setTest(td=>({...td,type:t}))} style={{padding:"11px",border:`1px solid ${test.type===t?"var(--blue-border)":"var(--border2)"}`,borderRadius:10,background:test.type===t?"var(--blue-bg)":"var(--surface3)",color:test.type===t?"var(--blue)":"var(--muted)",fontSize:13,fontWeight:test.type===t?600:400,cursor:"pointer",textTransform:"capitalize"}}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div>
+              <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Front Gross</div>
+              <input type="number" placeholder="0" value={test.front} onChange={e=>setTest(td=>({...td,front:e.target.value}))} style={inp} />
+            </div>
+            <div>
+              <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Back Gross</div>
+              <input type="number" placeholder="0" value={test.back} onChange={e=>setTest(td=>({...td,back:e.target.value}))} style={inp} />
+            </div>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12}}>
+            <div style={{fontSize:13,color:"var(--muted)"}}>Flat deal</div>
+            <div onClick={()=>setTest(td=>({...td,is_flat:!td.is_flat}))} style={{width:44,height:26,borderRadius:13,background:test.is_flat?"var(--amber)":"var(--surface3)",border:`1px solid ${test.is_flat?"transparent":"var(--border2)"}`,position:"relative",cursor:"pointer",transition:"background 0.2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:3,left:test.is_flat?21:3,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 3px rgba(0,0,0,0.4)"}} />
+            </div>
+          </div>
+          <CommPreview deal={test} plan={plan} />
+        </div>
+        <div className="card" style={{border:"1px solid var(--blue-border)",padding:"20px 22px"}}>
+          <div style={{fontSize:11,color:"var(--blue)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:6}}>Finance Reserve Calculator</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:14}}>Estimate the back end on the financing. The buy rate is what the bank charges the store; the sell rate is what the customer pays. The store earns the difference in interest ("reserve") and typically keeps {partPct}% of it.</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+            {finField('Amount Financed ($)','amount','250000')}
+            {finField('Term (months)','term','60','1')}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {finField('Buy Rate (%)','buyRate','5.5','0.05')}
+            {finField('Sell Rate (%)','sellRate','7.5','0.05')}
+          </div>
+          <div style={{fontSize:10.5,color:"var(--dim)",marginTop:8}}>Sell rate auto-fills at buy rate + 2 points (your standard markup) — edit it if this deal is different.</div>
+          {hasFin && (
+            <div style={{background:"var(--blue-bg)",border:"1px solid var(--blue-border)",borderRadius:"var(--r)",padding:"16px",marginTop:12}}>
+              <div style={{fontSize:11,color:"var(--blue)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>Estimated Reserve (store keeps {partPct}%)</div>
+              <div className="num" style={{fontSize:30,fontWeight:700,color:"var(--blue)",lineHeight:1}}>{fmt(reserve)}</div>
+              <div style={{display:"flex",flexDirection:"column",gap:5,marginTop:10,paddingTop:10,borderTop:"1px solid var(--blue-border)"}}>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Rate spread interest: <span style={{color:"var(--text)"}}>{fmt(spread)}</span></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Your cut at {plan.backPct}% back end: <span style={{color:"var(--green)",fontWeight:600}}>{fmt(myCut)}</span></div>
+              </div>
+              <div style={{fontSize:10.5,color:"var(--dim)",marginTop:10}}>Estimate only — lenders may pay reserve as a flat fee or cap the markup, and products (warranty, GAP, etc.) add to back gross on top of this.</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PayPlanView({plan, setPlan}) {
   const save = (k,v) => setPlan({...plan,[k]:v});
-  const [test, setTest] = useState({type:'new',front:'',back:'',split_pct:100});
 
   const Section = ({color, label, children}) => (
     <div className="card" style={{padding:"20px 22px"}}>
@@ -1606,27 +1732,16 @@ function PayPlanView({plan, setPlan}) {
             </div>
           </div>
         </Section>
-        <div className="card" style={{border:"1px solid var(--green-border)",padding:"20px 22px"}}>
-          <div style={{fontSize:11,color:"var(--green)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:16}}>Deal Calculator</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-            {['new','used'].map(t=>(
-              <button key={t} onClick={()=>setTest(td=>({...td,type:t}))} style={{padding:"11px",border:`1px solid ${test.type===t?"var(--blue-border)":"var(--border2)"}`,borderRadius:10,background:test.type===t?"var(--blue-bg)":"var(--surface3)",color:test.type===t?"var(--blue)":"var(--muted)",fontSize:13,fontWeight:test.type===t?600:400,cursor:"pointer",textTransform:"capitalize"}}>
-                {t}
-              </button>
-            ))}
+        <Section color="var(--amber)" label="Flats & Reserve">
+          <Slider label="Flat Amount" field="flatAmount" min={0} max={2000} step={25} prefix="$" suffix="" />
+          <Slider label="Dealer Reserve Participation" field="reservePct" min={50} max={100} suffix="%" />
+          <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
+            A flat is the set minimum you earn when the store makes little or no profit on a deal — the vehicle sold below cost, there was no financing markup, or special low-commission rules applied. Mark a deal as a flat when you log it; this amount is used unless you enter a different one on the deal.
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <div>
-              <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Front Gross</div>
-              <input type="number" placeholder="0" value={test.front} onChange={e=>setTest(td=>({...td,front:e.target.value}))} style={inp} />
-            </div>
-            <div>
-              <div style={{fontSize:11,color:"var(--muted)",marginBottom:7}}>Back Gross</div>
-              <input type="number" placeholder="0" value={test.back} onChange={e=>setTest(td=>({...td,back:e.target.value}))} style={inp} />
-            </div>
+          <div style={{fontSize:12,color:"var(--muted)",marginTop:12}}>
+            Looking for the Deal Calculator? It now has its own section in the sidebar.
           </div>
-          <CommPreview deal={test} plan={plan} />
-        </div>
+        </Section>
       </div>
     </div>
   );
@@ -1795,6 +1910,7 @@ function WashoutView({uid}) {
 const NAV_ITEMS = [
   {key:'dash',    label:'Dashboard', icon:'dash'},
   {key:'deals',   label:'Deal Log',  icon:'deals'},
+  {key:'calc',    label:'Calculator', icon:'calc'},
   {key:'coach',   label:'Coach',     icon:'bolt'},
   {key:'binder',  label:'Washouts',  icon:'binder'},
   {key:'goals',   label:'Goals',     icon:'goals'},
@@ -2920,6 +3036,7 @@ function Workspace({session, recovery, clearRecovery}) {
             <React.Fragment>
               {view==='dash'    && <DashboardView stats={stats} goals={goals} plan={plan} name={profile.name} {...actions} />}
               {view==='deals'   && <DealsView deals={deals} spiffs={spiffs} plan={plan} onRemoveDeal={removeDeal} onRemoveSpiff={removeSpiff} onEditDeal={setEditDeal} {...actions} />}
+              {view==='calc'    && <CalculatorView plan={plan} />}
               {view==='goals'   && <GoalsView stats={stats} goals={goals} setGoals={saveGoals} />}
               {view==='payplan' && <PayPlanView plan={plan} setPlan={savePlan} />}
               {view==='binder'  && <WashoutView uid={uid} />}
