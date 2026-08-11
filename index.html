@@ -1297,7 +1297,8 @@ function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal
   const {m,y} = getMonth();
   const yr = getYear();
 
-  const inPeriod = (iso) => filter==='all' ? true : filter==='mtd' ? inMonth(iso,m,y) : inYear(iso,yr);
+  const lmD = new Date(y, m-1, 1); // previous calendar month
+  const inPeriod = (iso) => filter==='all' ? true : filter==='mtd' ? inMonth(iso,m,y) : filter==='lm' ? inMonth(iso,lmD.getMonth(),lmD.getFullYear()) : inYear(iso,yr);
   const filteredDeals = deals.filter(d=>inPeriod(d.date) && (!q || (d.vehicle+' '+(d.stockNum||'')+' '+(d.notes||'')).toLowerCase().includes(q.toLowerCase())));
   const filteredSpiffs = spiffs.filter(s=>inPeriod(s.date));
   const sorted = [...filteredDeals].sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -1328,7 +1329,7 @@ function DealsView({deals, spiffs, plan, onRemoveDeal, onRemoveSpiff, onEditDeal
 
       <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:16}}>
         <div style={{display:"flex",gap:8}}>
-          {[['mtd','This Month'],['ytd','This Year'],['all','All Time']].map(([k,l])=>(
+          {[['mtd','This Month'],['lm','Last Month'],['ytd','This Year'],['all','All Time']].map(([k,l])=>(
             <button key={k} onClick={()=>setFilter(k)} style={{padding:"9px 16px",border:`1px solid ${filter===k?"var(--green-border)":"var(--border)"}`,borderRadius:10,background:filter===k?"var(--green-bg)":"var(--surface)",color:filter===k?"var(--green)":"var(--muted)",fontSize:12.5,fontWeight:filter===k?600:400,cursor:"pointer"}}>
               {l}
             </button>
@@ -1811,11 +1812,65 @@ function WashoutUploadModal({onClose, onSaved, uid}) {
   );
 }
 
-function WashoutView({uid}) {
+function WashoutView({uid, deals, spiffs, plan, hasPro, onUpgrade}) {
   const [sheets, setSheets] = useState(null); // null = still loading
   const [showUpload, setShowUpload] = useState(false);
   const [viewing, setViewing] = useState(null); // {sheet, url}
   const [err, setErr] = useState(null);
+  const [comparing, setComparing] = useState(null);   // sheet being AI-compared
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareResult, setCompareResult] = useState(null);
+  const [comparePayout, setComparePayout] = useState('');
+
+  const startCompare = (sh) => {
+    if (!hasPro) { onUpgrade(); return; }
+    setComparing(sh); setCompareResult(null); setComparePayout('');
+  };
+
+  const runCompare = async () => {
+    if (compareBusy || !comparing) return;
+    setCompareBusy(true);
+    try {
+      const sh = comparing;
+      // month is stored 1-12; deals use 0-based month checks
+      const mm = sh.month - 1, yy = sh.year;
+      const monthDeals = (deals||[]).filter(d=>inMonth(d.date,mm,yy));
+      const monthSpiffs = (spiffs||[]).filter(s=>inMonth(s.date,mm,yy));
+      const appTotal = monthDeals.reduce((s,d)=>s+calcMyComm(d,plan),0) + monthSpiffs.reduce((s,sp)=>s+(Number(sp.amount)||0),0);
+      // pull the stored sheet photo and send it along so the AI can read line items
+      let imageBase64 = null, mimeType = 'image/jpeg';
+      try {
+        const {data:su} = await sb.storage.from('washouts').createSignedUrl(sh.file_path, 600);
+        if (su && su.signedUrl && !(sh.mime_type||'').includes('pdf')) {
+          const blob = await (await fetch(su.signedUrl)).blob();
+          mimeType = blob.type || 'image/jpeg';
+          imageBase64 = await new Promise((resolve)=>{
+            const r = new FileReader();
+            r.onloadend = () => { const s=String(r.result||''); resolve(s.includes(',')?s.split(',')[1]:null); };
+            r.onerror = () => resolve(null);
+            r.readAsDataURL(blob);
+          });
+        }
+      } catch(e){}
+      const resp = await fetch(OCR_SERVER + '/api/washout-compare', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          monthLabel: MONTH_NAMES[sh.month-1]+' '+sh.year,
+          appTotal,
+          officialAmount: parseFloat(comparePayout) || 0,
+          notes: (sh.notes||'') + (parseFloat(comparePayout) ? '' : ' (Sheet payout total not typed in — read the payout total and line items from the attached photo.)'),
+          deals: monthDeals.map(d=>({date:d.date, vehicle:d.vehicle||'', stockNumber:d.stock_num||'', type:d.type||'new', frontGross:Number(d.front)||0, backGross:Number(d.back)||0, commission:calcMyComm(d,plan)})),
+          spiffs: monthSpiffs.map(s=>({date:s.date, description:s.description||'', amount:Number(s.amount)||0})),
+          ...(imageBase64 ? {imageBase64, mimeType} : {}),
+        }),
+      });
+      if (!resp.ok) throw new Error('Server returned '+resp.status);
+      setCompareResult(await resp.json());
+    } catch(e) {
+      setCompareResult({error:'Could not run the comparison — '+e.message+'. Check your connection and try again.'});
+    }
+    setCompareBusy(false);
+  };
 
   useEffect(()=>{ (async()=>{
     const {data, error} = await sb.from('washouts').select('*')
@@ -1849,7 +1904,7 @@ function WashoutView({uid}) {
         <button onClick={()=>setShowUpload(true)} style={pillBtn('green')}>+ Add Sheet</button>
       </div>
       <div style={{fontSize:13,color:"var(--muted)",marginBottom:24}}>
-        Every month-end sheet your manager hands you, filed and safe. <span style={{color:"var(--green)"}}>⚡ AI Compare — coming soon:</span> EarnIQ will read the sheet and flag anything that doesn't match your log.
+        Every month-end sheet your manager hands you, filed and safe. <span style={{color:"var(--green)"}}>⚡ AI Compare</span> reads the sheet and flags anything that doesn't match your log — with exact dollar differences.
       </div>
 
       {sheets===null ? (
@@ -1882,6 +1937,7 @@ function WashoutView({uid}) {
                   {sh.notes && <div style={{fontSize:12,color:"var(--muted)",marginBottom:10,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sh.notes}</div>}
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={()=>openSheet(sh)} style={{...pillBtn(),flex:1}}>View sheet</button>
+                    <button onClick={()=>startCompare(sh)} style={{...pillBtn('green'),flex:1}} title={hasPro?'Compare this sheet to your logged deals':'AI Compare is a Pro feature'}>⚡ AI Compare{!hasPro?' 🔒':''}</button>
                     <button onClick={()=>removeSheet(sh)} title="Remove" style={{background:"none",border:"none",color:"var(--dim)",fontSize:13,cursor:"pointer",padding:"2px 6px"}}>✕</button>
                   </div>
                 </div>
@@ -1892,6 +1948,55 @@ function WashoutView({uid}) {
       )}
 
       {showUpload && <WashoutUploadModal uid={uid} onClose={()=>setShowUpload(false)} onSaved={(row)=>{ setSheets(prev=>[row,...(prev||[])].sort((a,b)=>b.year-a.year || b.month-a.month)); setShowUpload(false); }} />}
+      {comparing && (
+        <Modal onClose={()=>{if(!compareBusy){setComparing(null);setCompareResult(null);}}} title={'AI Compare — '+MONTH_NAMES[comparing.month-1]+' '+comparing.year} maxWidth={520}>
+          {!compareResult ? (
+            <div>
+              <div style={{fontSize:13,color:"var(--muted)",lineHeight:1.6,marginBottom:14}}>
+                EarnIQ will read this washout sheet, match it line-by-line against what you logged, and flag every difference with a dollar amount and the likely reason (open RO closed out, shipping, chargeback, missing spiff…).
+              </div>
+              <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:6}}>Payout total on the sheet (optional — the AI can read it from the photo)</div>
+              <input value={comparePayout} onChange={e=>setComparePayout(e.target.value)} inputMode="decimal" placeholder="$0.00"
+                style={{width:"100%",boxSizing:"border-box",padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface)",color:"var(--text)",fontSize:14,marginBottom:16}} />
+              <button onClick={runCompare} disabled={compareBusy} style={{...pillBtn('green'),width:"100%",padding:"12px 0",opacity:compareBusy?0.6:1}}>
+                {compareBusy ? 'Reading the sheet…' : '⚡ Run AI Compare'}
+              </button>
+            </div>
+          ) : compareResult.error ? (
+            <div style={{fontSize:13.5,color:"var(--red)",lineHeight:1.6}}>{compareResult.error}</div>
+          ) : (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div style={{fontSize:14,fontWeight:700}}>Difference</div>
+                <div style={{fontSize:18,fontWeight:800,color:(Number(compareResult.difference)||0)<0?"var(--amber)":"var(--green)"}}>
+                  {((Number(compareResult.difference)||0)>=0?'+':'−')+fmt(compareResult.difference)}
+                </div>
+              </div>
+              <div style={{fontSize:13.5,lineHeight:1.6,marginBottom:14}}>{compareResult.summary}</div>
+              {(compareResult.discrepancies||[]).map((d,i)=>(
+                <div key={i} style={{borderTop:"1px solid var(--border)",padding:"10px 0"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",gap:10,marginBottom:4}}>
+                    <div style={{fontSize:13,fontWeight:600}}>{d.item}</div>
+                    <div style={{fontSize:13,fontWeight:700,color:(Number(d.amount)||0)<0?"var(--amber)":"var(--green)",whiteSpace:"nowrap"}}>
+                      {((Number(d.amount)||0)>=0?'+':'−')+fmt(d.amount)}
+                    </div>
+                  </div>
+                  <div style={{fontSize:12.5,color:"var(--muted)",lineHeight:1.55}}>{d.explanation}</div>
+                </div>
+              ))}
+              {(compareResult.suggestions||[]).length>0 && (
+                <div style={{borderTop:"1px solid var(--border)",paddingTop:10,marginTop:4}}>
+                  <div style={{fontSize:12.5,fontWeight:700,marginBottom:6}}>What to check</div>
+                  {(compareResult.suggestions||[]).map((s,i)=>(
+                    <div key={i} style={{fontSize:12.5,color:"var(--muted)",lineHeight:1.55,marginBottom:5}}>• {s}</div>
+                  ))}
+                </div>
+              )}
+              <button onClick={()=>{setComparing(null);setCompareResult(null);}} style={{...pillBtn(),width:"100%",padding:"11px 0",marginTop:14}}>Done</button>
+            </div>
+          )}
+        </Modal>
+      )}
       {viewing && (
         <Modal onClose={()=>setViewing(null)} title={MONTH_NAMES[viewing.sheet.month-1]+' '+viewing.sheet.year+' washout'} maxWidth={720}>
           <img src={viewing.url} alt="Washout sheet" style={{width:"100%",borderRadius:12,border:"1px solid var(--border2)"}} />
@@ -1996,14 +2101,36 @@ function Sidebar({view, setView, name, setName, mtdTotal, isAdmin, onSignOut, on
 }
 
 function MobileNav({view, setView, isAdmin}) {
-  const items = isAdmin ? [...NAV_ITEMS, {key:'admin', label:'Admin', icon:'users'}] : NAV_ITEMS;
+  // Primary tabs on the bar; everything else lives under "More" so the bar breathes.
+  const primary = NAV_ITEMS.filter(t=>['dash','deals','binder','coach'].includes(t.key));
+  const more = [
+    ...NAV_ITEMS.filter(t=>!['dash','deals','binder','coach'].includes(t.key)),
+    ...(isAdmin ? [{key:'admin', label:'Admin', icon:'users'}] : []),
+  ];
+  const [showMore, setShowMore] = useState(false);
+  const moreActive = more.some(t=>t.key===view);
+  const items = [...primary, {key:'__more', label:'More', icon:'plan'}];
+  const pick = (k) => {
+    if (k==='__more') { setShowMore(v=>!v); return; }
+    setShowMore(false); setView(k);
+  };
   return (
-    <div id="mobilenav">
+    <div id="mobilenav" style={{position:"relative"}}>
+      {showMore && (
+        <div style={{position:"absolute",bottom:"100%",right:8,marginBottom:8,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:8,boxShadow:"0 8px 30px rgba(0,0,0,0.35)",zIndex:900,minWidth:170}}>
+          {more.map(t=>(
+            <div key={t.key} className={"navlink"+(view===t.key?' active':'')} onClick={()=>pick(t.key)}>
+              <Icon d={ICONS[t.icon]} size={15} />
+              <span>{t.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {items.map(t=>(
-        <button key={t.key} onClick={()=>setView(t.key)}
-          style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,background:"none",border:"none",cursor:"pointer",color:view===t.key?"var(--green)":"var(--dim)",transition:"color 0.15s"}}>
+        <button key={t.key} onClick={()=>pick(t.key)}
+          style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,background:"none",border:"none",cursor:"pointer",color:(t.key==='__more'?(moreActive||showMore):view===t.key)?"var(--green)":"var(--dim)",transition:"color 0.15s"}}>
           <Icon d={ICONS[t.icon]} size={19} />
-          <span style={{fontSize:9.5,fontWeight:view===t.key?600:400,letterSpacing:"0.03em"}}>{t.label}</span>
+          <span style={{fontSize:9.5,fontWeight:(t.key==='__more'?(moreActive||showMore):view===t.key)?600:400,letterSpacing:"0.03em"}}>{t.label}</span>
         </button>
       ))}
     </div>
@@ -3039,7 +3166,7 @@ function Workspace({session, recovery, clearRecovery}) {
               {view==='calc'    && <CalculatorView plan={plan} />}
               {view==='goals'   && <GoalsView stats={stats} goals={goals} setGoals={saveGoals} />}
               {view==='payplan' && <PayPlanView plan={plan} setPlan={savePlan} />}
-              {view==='binder'  && <WashoutView uid={uid} />}
+              {view==='binder'  && <WashoutView uid={uid} deals={deals} spiffs={spiffs} plan={plan} hasPro={hasPro} onUpgrade={()=>setShowUpgrade(true)} />}
               {view==='coach'   && <CoachView hasPro={hasPro} onUpgrade={()=>setShowUpgrade(true)} dealCount={deals.length} />}
               {view==='admin'   && isAdmin && <AdminView />}
             </React.Fragment>
