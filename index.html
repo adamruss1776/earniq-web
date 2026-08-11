@@ -2018,8 +2018,8 @@ function WashoutView({uid, deals, spiffs, plan, hasPro, onUpgrade}) {
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                 <div style={{fontSize:14,fontWeight:700}}>Difference</div>
-                <div style={{fontSize:18,fontWeight:800,color:(Number(compareResult.difference)||0)<0?"var(--amber)":"var(--green)"}}>
-                  {((Number(compareResult.difference)||0)>=0?'+':'−')+fmt(compareResult.difference)}
+                <div style={{fontSize:18,fontWeight:800,color:(Number(compareResult.difference!=null?compareResult.difference:compareResult.dollarDifference)||0)<0?"var(--amber)":"var(--green)"}}>
+                  {((Number(compareResult.difference!=null?compareResult.difference:compareResult.dollarDifference)||0)>=0?'+':'−')+fmt(compareResult.difference!=null?compareResult.difference:compareResult.dollarDifference)}
                 </div>
               </div>
               <div style={{fontSize:13.5,lineHeight:1.6,marginBottom:14}}>{compareResult.summary}</div>
