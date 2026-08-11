@@ -191,7 +191,8 @@ const DEFAULT_PLAN = {
   newFrontPct: 15, newFrontCap: 6000,
   usedFrontPct: 20, usedFrontCap: 7500,
   backPct: 10, capsEnabled: true,
-  flatAmount: 500, reservePct: 75
+  flatAmount: 500, reservePct: 75,
+  monthlySalary: 0, monthlyDraw: 0
 };
 const DEFAULT_GOALS = { monthlyIncome: 20000, monthlyUnits: 10, yearlyIncome: 240000 };
 
@@ -1204,6 +1205,29 @@ function DashboardView({stats, goals, plan, name, onImport, onBulkImport, onLogD
         </div>
       </div>
 
+      {/* Paycheck math — only when a salary or draw is set in the Pay Plan */}
+      {((Number(plan.monthlySalary)||0) > 0 || (Number(plan.monthlyDraw)||0) > 0) && (()=>{
+        const sal = Number(plan.monthlySalary)||0, draw = Number(plan.monthlyDraw)||0;
+        const net = S.mtdTotal - draw + sal;
+        return (
+          <div className="card" style={{padding:"16px 20px",marginBottom:14}}>
+            <div style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:10}}>Month-End Check Preview</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"6px 14px",alignItems:"center",fontSize:13.5}}>
+              <span>Commission <b className="num">{fmt(S.mtdTotal)}</b></span>
+              {draw>0 && <span style={{color:"var(--amber)"}}>− Draw <b className="num">{fmt(draw)}</b></span>}
+              {sal>0 && <span style={{color:"var(--green)"}}>+ Salary <b className="num">{fmt(sal)}</b></span>}
+              <span style={{color:"var(--dim)"}}>=</span>
+              <span style={{fontWeight:700,color:net<0?"var(--amber)":"var(--green)"}} className="num">{net<0?'−':''}{fmt(net)}</span>
+            </div>
+            {S.mtdTotal < draw && draw>0 && (
+              <div style={{fontSize:12,color:"var(--amber)",marginTop:8,lineHeight:1.5}}>
+                Commission so far is under your draw — you'd be "in the bucket" {fmt(draw - S.mtdTotal)} if the month ended today.
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Stats */}
       <div className="grid-stats" style={{marginBottom:14}}>
         <Stat label="Front Gross" value={fmt(S.mtdFront)} sub="MTD" color="var(--blue)" />
@@ -1741,6 +1765,32 @@ function PayPlanView({plan, setPlan}) {
           </div>
           <div style={{fontSize:12,color:"var(--muted)",marginTop:12}}>
             Looking for the Deal Calculator? It now has its own section in the sidebar.
+          </div>
+        </Section>
+      </div>
+      <div className="grid-2" style={{marginBottom:14}}>
+        <Section color="var(--green)" label="Salary & Other Pay">
+          <div style={{fontSize:13,color:"var(--muted)",marginBottom:8}}>Monthly salary / guaranteed pay</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+            <span style={{fontSize:15,color:"var(--muted)"}}>$</span>
+            <input type="number" min="0" step="50" value={plan.monthlySalary||0}
+              onChange={e=>save('monthlySalary',Math.max(0,Number(e.target.value)||0))}
+              style={{flex:1,padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface2)",color:"var(--text)",fontSize:15}} />
+          </div>
+          <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
+            Any fixed pay you receive on top of commission — a monthly salary, guarantee, or stipend. This gets added to your projected month-end pay.
+          </div>
+        </Section>
+        <Section color="var(--amber)" label="Draw">
+          <div style={{fontSize:13,color:"var(--muted)",marginBottom:8}}>Monthly draw against commission</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+            <span style={{fontSize:15,color:"var(--muted)"}}>$</span>
+            <input type="number" min="0" step="50" value={plan.monthlyDraw||0}
+              onChange={e=>save('monthlyDraw',Math.max(0,Number(e.target.value)||0))}
+              style={{flex:1,padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface2)",color:"var(--text)",fontSize:15}} />
+          </div>
+          <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
+            A draw is an advance you're paid mid-month (often on the 15th) that gets deducted from your commission check. It's not lost money — you already received it — but your month-end check will be smaller by this amount.
           </div>
         </Section>
       </div>
