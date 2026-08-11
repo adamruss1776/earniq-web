@@ -1711,42 +1711,53 @@ function CalculatorView({plan}) {
   );
 }
 
+// Defined outside PayPlanView so React keeps these mounted while typing —
+// defining them inside caused inputs to lose focus after every keystroke.
+const PPSection = ({color, label, children}) => (
+  <div className="card" style={{padding:"20px 22px"}}>
+    <div style={{fontSize:11,color,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:16}}>{label}</div>
+    {children}
+  </div>
+);
+const PPSlider = ({plan, save, label, field, min, max, step=1, prefix='', suffix='%'}) => (
+  <div style={{marginBottom:18}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+      <span style={{fontSize:13,color:"var(--muted)"}}>{label}</span>
+      <span className="num" style={{fontSize:14,fontWeight:600}}>{prefix}{Number(plan[field]).toLocaleString()}{suffix}</span>
+    </div>
+    <input type="range" min={min} max={max} step={step} value={plan[field]}
+      onChange={e=>save(field,Number(e.target.value))} style={{width:"100%"}} />
+  </div>
+);
+const PPMoneyInput = ({plan, save, field}) => (
+  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+    <span style={{fontSize:15,color:"var(--muted)"}}>$</span>
+    <input type="number" min="0" step="50" value={plan[field] ? String(plan[field]) : ''} placeholder="0"
+      onChange={e=>save(field, Math.max(0, Number(e.target.value)||0))}
+      style={{flex:1,padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface2)",color:"var(--text)",fontSize:15}} />
+  </div>
+);
+
 function PayPlanView({plan, setPlan}) {
   const save = (k,v) => setPlan({...plan,[k]:v});
-
-  const Section = ({color, label, children}) => (
-    <div className="card" style={{padding:"20px 22px"}}>
-      <div style={{fontSize:11,color,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:16}}>{label}</div>
-      {children}
-    </div>
-  );
-  const Slider = ({label, field, min, max, step=1, prefix='', suffix='%'}) => (
-    <div style={{marginBottom:18}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <span style={{fontSize:13,color:"var(--muted)"}}>{label}</span>
-        <span className="num" style={{fontSize:14,fontWeight:600}}>{prefix}{Number(plan[field]).toLocaleString()}{suffix}</span>
-      </div>
-      <input type="range" min={min} max={max} step={step} value={plan[field]}
-        onChange={e=>save(field,Number(e.target.value))} style={{width:"100%"}} />
-    </div>
-  );
+  const Section = PPSection;
 
   return (
     <div>
       <div style={{fontSize:25,fontWeight:700,letterSpacing:"-0.02em",marginBottom:24}}>Pay Plan</div>
       <div className="grid-2" style={{marginBottom:14}}>
         <Section color="var(--blue)" label="New Vehicles">
-          <Slider label="Front End Commission" field="newFrontPct" min={5} max={35} suffix="%" />
-          <Slider label="Front End Cap" field="newFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
+          <PPSlider plan={plan} save={save} label="Front End Commission" field="newFrontPct" min={5} max={35} suffix="%" />
+          <PPSlider plan={plan} save={save} label="Front End Cap" field="newFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
         </Section>
         <Section color="var(--amber)" label="Used Vehicles">
-          <Slider label="Front End Commission" field="usedFrontPct" min={5} max={35} suffix="%" />
-          <Slider label="Front End Cap" field="usedFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
+          <PPSlider plan={plan} save={save} label="Front End Commission" field="usedFrontPct" min={5} max={35} suffix="%" />
+          <PPSlider plan={plan} save={save} label="Front End Cap" field="usedFrontCap" min={1000} max={20000} step={250} prefix="$" suffix="" />
         </Section>
       </div>
       <div className="grid-2" style={{marginBottom:14}}>
         <Section color="var(--muted)" label="Back End">
-          <Slider label="Back End Commission" field="backPct" min={5} max={35} suffix="%" />
+          <PPSlider plan={plan} save={save} label="Back End Commission" field="backPct" min={5} max={35} suffix="%" />
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:6}}>
             <div>
               <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>Enforce Front End Caps</div>
@@ -1758,8 +1769,8 @@ function PayPlanView({plan, setPlan}) {
           </div>
         </Section>
         <Section color="var(--amber)" label="Flats & Reserve">
-          <Slider label="Flat Amount" field="flatAmount" min={0} max={2000} step={25} prefix="$" suffix="" />
-          <Slider label="Dealer Reserve Participation" field="reservePct" min={50} max={100} suffix="%" />
+          <PPSlider plan={plan} save={save} label="Flat Amount" field="flatAmount" min={0} max={2000} step={25} prefix="$" suffix="" />
+          <PPSlider plan={plan} save={save} label="Dealer Reserve Participation" field="reservePct" min={50} max={100} suffix="%" />
           <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
             A flat is the set minimum you earn when the store makes little or no profit on a deal — the vehicle sold below cost, there was no financing markup, or special low-commission rules applied. Mark a deal as a flat when you log it; this amount is used unless you enter a different one on the deal.
           </div>
@@ -1771,24 +1782,14 @@ function PayPlanView({plan, setPlan}) {
       <div className="grid-2" style={{marginBottom:14}}>
         <Section color="var(--green)" label="Salary & Other Pay">
           <div style={{fontSize:13,color:"var(--muted)",marginBottom:8}}>Monthly salary / guaranteed pay</div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
-            <span style={{fontSize:15,color:"var(--muted)"}}>$</span>
-            <input type="number" min="0" step="50" value={plan.monthlySalary||0}
-              onChange={e=>save('monthlySalary',Math.max(0,Number(e.target.value)||0))}
-              style={{flex:1,padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface2)",color:"var(--text)",fontSize:15}} />
-          </div>
+          <PPMoneyInput plan={plan} save={save} field="monthlySalary" />
           <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
             Any fixed pay you receive on top of commission — a monthly salary, guarantee, or stipend. This gets added to your projected month-end pay.
           </div>
         </Section>
         <Section color="var(--amber)" label="Draw">
           <div style={{fontSize:13,color:"var(--muted)",marginBottom:8}}>Monthly draw against commission</div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
-            <span style={{fontSize:15,color:"var(--muted)"}}>$</span>
-            <input type="number" min="0" step="50" value={plan.monthlyDraw||0}
-              onChange={e=>save('monthlyDraw',Math.max(0,Number(e.target.value)||0))}
-              style={{flex:1,padding:"11px 13px",borderRadius:10,border:"1px solid var(--border)",background:"var(--surface2)",color:"var(--text)",fontSize:15}} />
-          </div>
+          <PPMoneyInput plan={plan} save={save} field="monthlyDraw" />
           <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
             A draw is an advance you're paid mid-month (often on the 15th) that gets deducted from your commission check. It's not lost money — you already received it — but your month-end check will be smaller by this amount.
           </div>
